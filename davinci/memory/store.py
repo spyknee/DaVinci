@@ -477,6 +477,7 @@ class MemoryStore:
             zoom_levels=zoom_levels,
         )
         node.created_at = row["created_at"]
+        node.id = row["id"]
         return node
 
     def _node_to_row(self, node: MemoryNode, memory_id: str) -> tuple:
@@ -507,6 +508,22 @@ class MemoryStore:
             node.zoom_levels.get(3, node.content),
             "{}",
         )
+
+    def get_all(self) -> list[MemoryNode]:
+        """Return all memories sorted by classification priority then frequency.
+
+        Returns
+        -------
+        list[MemoryNode]
+            All stored memories, ordered core → boundary → decay → forget,
+            then by frequency descending within each bucket.
+        """
+        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        nodes = [self._row_to_node(row) for row in rows]
+        nodes.sort(
+            key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency)
+        )
+        return nodes
 
     # ------------------------------------------------------------------
     # Lifecycle
