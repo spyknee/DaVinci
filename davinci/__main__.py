@@ -248,12 +248,7 @@ def cmd_approve(dv: DaVinci, args: argparse.Namespace) -> None:
 
 
 def cmd_approve_all(dv: DaVinci, _args: argparse.Namespace) -> None:
-    # Approve all by iterating in reverse so indices stay valid
-    pending = dv.review_pending()
-    count = 0
-    for i in range(len(pending) - 1, -1, -1):
-        if dv.approve_fact(i):
-            count += 1
+    count = dv.approve_all_facts()
     print(f"Approved and stored {count} facts.")
 
 

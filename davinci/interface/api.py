@@ -31,6 +31,9 @@ from davinci.memory.store import MemoryStore
 
 __all__ = ["DaVinci"]
 
+# Maximum number of conversation turns kept in working memory for LLM context
+_MAX_CONVERSATION_TURNS = 20
+
 
 class DaVinci(BaseInterface):
     """Unified Python API for the DaVinci fractal memory system.
@@ -242,7 +245,7 @@ class DaVinci(BaseInterface):
 
         # 4. Build messages list with conversation history
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        messages.extend(self._conversation[-20:])  # last 20 turns
+        messages.extend(self._conversation[-_MAX_CONVERSATION_TURNS:])
         messages.append({"role": "user", "content": question})
 
         answer = backend.chat(messages)
@@ -394,6 +397,18 @@ class DaVinci(BaseInterface):
         if self._auto_learn is None:
             return False
         return self._auto_learn.reject(index)
+
+    def approve_all_facts(self) -> int:
+        """Approve and store all pending auto-learn facts.
+
+        Returns
+        -------
+        int
+            Number of facts stored.
+        """
+        if self._auto_learn is None:
+            return 0
+        return self._auto_learn.approve_all()
 
     # ------------------------------------------------------------------
     # Lifecycle
