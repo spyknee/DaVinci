@@ -3,16 +3,27 @@ DaVinci CLI — run with ``python -m davinci <command> [options]``.
 
 Commands
 --------
-remember  Store a new memory
-recall    Retrieve a memory by UUID
-search    Search memories by content
-forget    Prune memories by classification
-decay     Run the decay cycle
-consolidate  Run the consolidation engine
-merge     Merge similar memories
-stats     Show memory statistics
-memories  List all (or filtered) memories
-migrate   Run migration check
+remember       Store a new memory
+recall         Retrieve a memory by UUID
+search         Search memories by content
+search-fts     FTS5 full-text search
+forget         Prune memories by classification
+decay          Run the decay cycle
+consolidate    Run the consolidation engine
+merge          Merge similar memories
+stats          Show memory statistics
+memories       List all (or filtered) memories
+migrate        Run migration check
+ask            Ask the LLM a question (full pipeline)
+model          Show active LLM model
+model-switch   Switch active LLM model
+model-toggle   Cycle to next LLM model
+episodic-status  Show episodic memory statistics
+episodic-decay   Run episodic importance decay
+episodic-prune   Prune low-importance episodic entries
+review         Show pending auto-learn facts
+approve        Approve a pending fact by index
+approve-all    Approve all pending facts
 """
 
 from __future__ import annotations
@@ -93,6 +104,11 @@ def cmd_search(dv: DaVinci, args: argparse.Namespace) -> None:
     _print_node_table(results, title=f"Search results for '{args.query}' ({len(results)} found):")
 
 
+def cmd_search_fts(dv: DaVinci, args: argparse.Namespace) -> None:
+    results = dv.search_fts(args.query, limit=args.limit)
+    _print_node_table(results, title=f"FTS5 search results for '{args.query}' ({len(results)} found):")
+
+
 def cmd_forget(dv: DaVinci, args: argparse.Namespace) -> None:
     count = dv.forget(args.classification)
     print(f"Deleted {count} memories with classification '{args.classification}'.")
@@ -158,6 +174,89 @@ def cmd_migrate(dv: DaVinci, _args: argparse.Namespace) -> None:
                 print(f"      {mid}")
 
 
+def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
+    answer = dv.ask(args.question)
+    print(answer)
+
+
+def cmd_model(dv: DaVinci, _args: argparse.Namespace) -> None:
+    status = dv.model_status()
+    if not status:
+        print("LLM not available.")
+        return
+    print(f"Active model  : {status.get('active', '—')}")
+    print(f"Model ID      : {status.get('model', '—')}")
+    print(f"Base URL      : {status.get('base_url', '—')}")
+    print(f"Available     : {status.get('available', False)}")
+
+
+def cmd_model_switch(dv: DaVinci, args: argparse.Namespace) -> None:
+    ok = dv.model_switch(args.name)
+    if ok:
+        print(f"Switched to model: {args.name}")
+    else:
+        print(f"Unknown model: {args.name}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_model_toggle(dv: DaVinci, _args: argparse.Namespace) -> None:
+    new_name = dv.model_toggle()
+    if new_name:
+        print(f"Toggled to model: {new_name}")
+    else:
+        print("LLM not available.")
+
+
+def cmd_episodic_status(dv: DaVinci, _args: argparse.Namespace) -> None:
+    s = dv.episodic_status()
+    print("=" * 40)
+    print("  Episodic Memory Statistics")
+    print("=" * 40)
+    print(f"  Episodes        : {s.get('count', 0)}")
+    print(f"  Avg importance  : {s.get('avg_importance', 0.0):.3f}")
+    print(f"  Oldest episode  : {s.get('oldest_timestamp') or '—'}")
+    print("=" * 40)
+
+
+def cmd_episodic_decay(dv: DaVinci, args: argparse.Namespace) -> None:
+    count = dv.episodic_decay(rate=args.rate)
+    print(f"Episodic decay complete. {count} entries updated.")
+
+
+def cmd_episodic_prune(dv: DaVinci, args: argparse.Namespace) -> None:
+    count = dv.episodic_prune(threshold=args.threshold)
+    print(f"Episodic prune complete. {count} entries deleted.")
+
+
+def cmd_review(dv: DaVinci, _args: argparse.Namespace) -> None:
+    pending = dv.review_pending()
+    if not pending:
+        print("No pending facts to review.")
+        return
+    print(f"Pending facts ({len(pending)}):")
+    for i, entry in enumerate(pending):
+        print(f"  [{i}] {entry['fact']}")
+
+
+def cmd_approve(dv: DaVinci, args: argparse.Namespace) -> None:
+    ok = dv.approve_fact(args.index)
+    if ok:
+        print(f"Fact [{args.index}] approved and stored.")
+    else:
+        print(f"Invalid index: {args.index}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_approve_all(dv: DaVinci, _args: argparse.Namespace) -> None:
+    # Approve all by iterating in reverse so indices stay valid
+    pending = dv.review_pending()
+    count = 0
+    for i in range(len(pending) - 1, -1, -1):
+        if dv.approve_fact(i):
+            count += 1
+    print(f"Approved and stored {count} facts.")
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -172,6 +271,12 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default="davinci_memory.db",
         help="Path to the SQLite database file (default: davinci_memory.db).",
+    )
+    parser.add_argument(
+        "--profile",
+        metavar="PATH",
+        default=None,
+        help="Path to a JSON profile file for LLM configuration.",
     )
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -191,6 +296,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search = sub.add_parser("search", help="Search memories by content.")
     p_search.add_argument("query", help="Search query string.")
     p_search.add_argument("--limit", type=int, default=10, metavar="N", help="Maximum results (default: 10).")
+
+    # search-fts
+    p_search_fts = sub.add_parser("search-fts", help="FTS5 full-text search.")
+    p_search_fts.add_argument("query", help="Search query string.")
+    p_search_fts.add_argument("--limit", type=int, default=10, metavar="N", help="Maximum results (default: 10).")
 
     # forget
     p_forget = sub.add_parser("forget", help="Prune memories by classification.")
@@ -238,6 +348,60 @@ def _build_parser() -> argparse.ArgumentParser:
     # migrate
     sub.add_parser("migrate", help="Run migration check.")
 
+    # ask
+    p_ask = sub.add_parser("ask", help="Ask the LLM a question (full pipeline).")
+    p_ask.add_argument("question", help="The question to ask.")
+    p_ask.add_argument(
+        "--mode",
+        choices=["fast", "deep", "auto"],
+        default="auto",
+        metavar="MODE",
+        help="Answer mode: fast, deep, or auto (default: auto).",
+    )
+
+    # model
+    sub.add_parser("model", help="Show active LLM model.")
+
+    # model-switch
+    p_ms = sub.add_parser("model-switch", help="Switch active LLM model.")
+    p_ms.add_argument("name", help="Model key name (e.g. qwen, qwen35, model3).")
+
+    # model-toggle
+    sub.add_parser("model-toggle", help="Cycle to next LLM model.")
+
+    # episodic-status
+    sub.add_parser("episodic-status", help="Show episodic memory statistics.")
+
+    # episodic-decay
+    p_ed = sub.add_parser("episodic-decay", help="Run episodic importance decay.")
+    p_ed.add_argument(
+        "--rate",
+        type=float,
+        default=0.05,
+        metavar="FLOAT",
+        help="Decay rate per day (default: 0.05).",
+    )
+
+    # episodic-prune
+    p_ep = sub.add_parser("episodic-prune", help="Prune low-importance episodic entries.")
+    p_ep.add_argument(
+        "--threshold",
+        type=float,
+        default=0.2,
+        metavar="FLOAT",
+        help="Importance threshold below which to prune (default: 0.2).",
+    )
+
+    # review
+    sub.add_parser("review", help="Show pending auto-learn facts.")
+
+    # approve
+    p_approve = sub.add_parser("approve", help="Approve a pending fact by index.")
+    p_approve.add_argument("index", type=int, help="Zero-based index of the fact to approve.")
+
+    # approve-all
+    sub.add_parser("approve-all", help="Approve all pending auto-learn facts.")
+
     return parser
 
 
@@ -249,6 +413,7 @@ _COMMANDS = {
     "remember": cmd_remember,
     "recall": cmd_recall,
     "search": cmd_search,
+    "search-fts": cmd_search_fts,
     "forget": cmd_forget,
     "decay": cmd_decay,
     "consolidate": cmd_consolidate,
@@ -256,6 +421,16 @@ _COMMANDS = {
     "stats": cmd_stats,
     "memories": cmd_memories,
     "migrate": cmd_migrate,
+    "ask": cmd_ask,
+    "model": cmd_model,
+    "model-switch": cmd_model_switch,
+    "model-toggle": cmd_model_toggle,
+    "episodic-status": cmd_episodic_status,
+    "episodic-decay": cmd_episodic_decay,
+    "episodic-prune": cmd_episodic_prune,
+    "review": cmd_review,
+    "approve": cmd_approve,
+    "approve-all": cmd_approve_all,
 }
 
 
@@ -272,7 +447,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    with DaVinci(db_path=args.db) as dv:
+    with DaVinci(db_path=args.db, profile_path=args.profile) as dv:
         handler(dv, args)
 
 
