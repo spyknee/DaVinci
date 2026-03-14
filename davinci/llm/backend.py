@@ -90,14 +90,14 @@ class LMStudioBackend(LLMBackend):
 
     Parameters
     ----------
-    base_url:  Base URL of the LM Studio server (default ``"http://127.0.0.1:1234"``).
+    base_url:  Base URL of the LM Studio server (default ``"http://192.168.0.176:1234"``).
     model:     Model identifier to request (default ``"qwen/qwen3-coder-next"``).
     api_key:   API key sent as Bearer token (default ``"lm-studio"``).
     """
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:1234",
+        base_url: str = "http://192.168.0.176:1234",
         model: str = "qwen/qwen3-coder-next",
         api_key: str = "lm-studio",
         **config,
@@ -121,8 +121,8 @@ class LMStudioBackend(LLMBackend):
     def _make_connection(self) -> http.client.HTTPConnection | http.client.HTTPSConnection:
         scheme, netloc, _ = self._parsed_url()
         if scheme == "https":
-            return http.client.HTTPSConnection(netloc, timeout=30)
-        return http.client.HTTPConnection(netloc, timeout=30)
+            return http.client.HTTPSConnection(netloc, timeout=120)
+        return http.client.HTTPConnection(netloc, timeout=120)
 
     # ------------------------------------------------------------------
     # LLMBackend interface
