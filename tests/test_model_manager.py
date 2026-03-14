@@ -5,7 +5,7 @@ Tests for davinci.llm.manager — Model Manager
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from davinci.llm.backend import LLMBackend, LMStudioBackend, GitHubModelsBackend
 from davinci.llm.manager import ModelManager
@@ -121,6 +121,13 @@ class TestModelManagerToggle(unittest.TestCase):
 
 
 class TestModelManagerStatus(unittest.TestCase):
+    def setUp(self):
+        self._patcher = patch("davinci.llm.backend.LMStudioBackend.is_available", return_value=False)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
     def test_status_keys(self):
         mm = ModelManager()
         status = mm.status()
@@ -139,7 +146,7 @@ class TestModelManagerStatus(unittest.TestCase):
 
     def test_status_base_url(self):
         mm = ModelManager()
-        self.assertEqual(mm.status()["base_url"], "http://127.0.0.1:1234")
+        self.assertEqual(mm.status()["base_url"], "http://192.168.0.176:1234")
 
 
 class TestModelManagerLazyInstantiation(unittest.TestCase):

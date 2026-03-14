@@ -24,13 +24,13 @@ _DEFAULT_PROFILE: dict = {
     "active_model": "qwen",
     "models": {
         "qwen": {
-            "base_url": "http://127.0.0.1:1234",
+            "base_url": "http://192.168.0.176:1234",
             "model": "qwen/qwen3-coder-next",
             "api_key": "lm-studio",
             "provider": "lmstudio",
         },
         "qwen35": {
-            "base_url": "http://127.0.0.1:1234",
+            "base_url": "http://192.168.0.176:1234",
             "model": "qwen/qwen3.5-9b",
             "api_key": "lm-studio",
             "provider": "lmstudio",
