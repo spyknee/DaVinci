@@ -79,41 +79,83 @@ class TestComputeC(unittest.TestCase):
         self.assertIsInstance(c, complex)
 
     def test_midpoint_is_zero_plus_zero_j(self):
+        # recency midpoint maps to (-2.0+0.25)/2 = -0.875; freq midpoint maps to 0.0
         c = compute_c(5, 5, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, 0.0)
+        self.assertAlmostEqual(c.real, -0.875)
         self.assertAlmostEqual(c.imag, 0.0)
 
     def test_max_frequency_real_part(self):
+        # max frequency maps to imag=+1.0 (target_max of [-1, 1])
         c = compute_c(10, 5, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.imag, 2.0)
+        self.assertAlmostEqual(c.imag, 1.0)
 
     def test_max_recency_imag_part(self):
+        # max recency maps to real=+0.25 (target_max of [-2, 0.25])
         c = compute_c(5, 10, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, 2.0)
+        self.assertAlmostEqual(c.real, 0.25)
 
     def test_min_frequency_real_part(self):
+        # min frequency maps to imag=-1.0 (target_min of [-1, 1])
         c = compute_c(0, 5, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.imag, -2.0)
+        self.assertAlmostEqual(c.imag, -1.0)
 
     def test_real_and_imag_independent(self):
-        # recency=10 (max) → real=+2; frequency=0 (min) → imag=-2
+        # recency=10 (max) → real=+0.25; frequency=0 (min) → imag=-1.0
         c = compute_c(0, 10, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, 2.0)
-        self.assertAlmostEqual(c.imag, -2.0)
+        self.assertAlmostEqual(c.real, 0.25)
+        self.assertAlmostEqual(c.imag, -1.0)
 
     def test_compute_c_recency_on_real_axis(self):
-        """After Fix 1, recency drives the real part of c."""
+        """Recency drives the real part of c using the [-2.0, 0.25] target range."""
         # With recency=1 (non-midpoint of [0,10]), the real part must be non-zero
         c = compute_c(frequency=0, recency=1.0, freq_range=(0, 10), recency_range=(0, 10))
         self.assertNotAlmostEqual(c.real, 0.0)
-        self.assertAlmostEqual(c.real, normalize(1.0, 0, 10))
+        self.assertAlmostEqual(c.real, normalize(1.0, 0, 10, target_min=-2.0, target_max=0.25))
 
     def test_new_memory_with_empty_ranges_is_core(self):
-        """MemoryNode with default (0, 0) ranges places c=0+0j → core."""
+        """MemoryNode with default (0, 0) ranges places c at degenerate midpoint → core."""
         node = MemoryNode(content="x", frequency=0)
-        self.assertAlmostEqual(node.c_value.real, 0.0)
+        # Degenerate recency range: midpoint of [-2.0, 0.25] = (-2.0 + 0.25) / 2 = -0.875
+        self.assertAlmostEqual(node.c_value.real, -0.875)
         self.assertAlmostEqual(node.c_value.imag, 0.0)
         self.assertEqual(node.classification, "core")
+
+    def test_most_recent_node_is_core(self):
+        """Node at max recency should be core or boundary, never forget or decay."""
+        t = time.time()
+        # max recency maps to real=+0.25; degenerate freq range → imag=0.0
+        # c = 0.25 + 0j is inside the Mandelbrot set → core
+        c = compute_c(0, t, (0.0, 0.0), (t - 100, t))
+        result = classify(c)
+        self.assertNotIn(result, {"forget", "decay"})
+
+    def test_oldest_node_is_forget(self):
+        """Node at min recency and min frequency (in a populated range) is forget."""
+        t = time.time()
+        # freq_range=(0, 10): freq=0 → imag=-1.0
+        # recency_range=(t-100, t): recency=t-100 → real=-2.0
+        # c = -2.0 - 1.0j: z₁ = 0² + c = -2-1j, |z₁| = sqrt(5) ≈ 2.24 > 2
+        # → escapes on the first iteration → forget
+        c = compute_c(0, t - 100, (0, 10), (t - 100, t))
+        self.assertEqual(classify(c), "forget")
+
+    def test_new_memory_not_forget(self):
+        """Three memories stored in quick succession should not be classified forget."""
+        from davinci.memory.store import MemoryStore
+        with MemoryStore(":memory:") as store:
+            ids = [
+                store.store("The Mandelbrot set is a fractal."),
+                store.store("Memory nodes are classified by escape iteration."),
+                store.store("Jaccard similarity merges memories."),
+            ]
+            for mid in ids:
+                row = store._conn.execute(
+                    "SELECT classification FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                self.assertNotEqual(
+                    row[0], "forget",
+                    f"Memory {mid} was immediately classified as forget"
+                )
 
 
 # ---------------------------------------------------------------------------
