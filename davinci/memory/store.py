@@ -183,14 +183,14 @@ class MemoryStore:
         if row is None:
             return None
 
-        node = self._row_to_node(row)
+        freq_range, recency_range = self._get_ranges()
+        node = self._row_to_node(row, freq_range, recency_range)
 
         # Record access
         node.frequency += 1
         node.recency = time.time()
 
-        # Recompute with updated global ranges
-        freq_range, recency_range = self._get_ranges()
+        # Recompute classification with current global ranges
         node._freq_range = freq_range
         node._recency_range = recency_range
         node._recompute()
@@ -221,30 +221,47 @@ class MemoryStore:
         return node
 
     def search(self, query: str, limit: int = 10) -> list[MemoryNode]:
-        """Return memories whose content contains *query* (case-insensitive).
+        """Return memories whose content matches *query*, ranked by relevance.
 
-        Results are ordered by classification priority
+        Scoring:
+        - Exact phrase match (case-insensitive) → score 3
+        - All query words present → score 2
+        - Any query word present → score 1
+
+        Within the same score, results are ordered by classification priority
         (core → boundary → decay → forget) then by frequency descending.
 
         Parameters
         ----------
-        query: Substring to search for.
+        query: Search string.
         limit: Maximum number of results to return.
 
         Returns
         -------
         list[MemoryNode]
         """
-        rows = self._conn.execute(
-            "SELECT * FROM memories WHERE content LIKE ? COLLATE NOCASE",
-            (f"%{query}%",),
-        ).fetchall()
+        query_lower = query.lower()
+        words = query_lower.split()
 
-        nodes = [self._row_to_node(row) for row in rows]
-        nodes.sort(
-            key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency)
-        )
-        return nodes[:limit]
+        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        freq_range, recency_range = self._get_ranges()
+
+        scored: list[tuple[int, MemoryNode]] = []
+        for row in rows:
+            content_lower = row["content"].lower()
+            if query_lower in content_lower:
+                score = 3
+            elif all(w in content_lower for w in words):
+                score = 2
+            elif any(w in content_lower for w in words):
+                score = 1
+            else:
+                continue
+            node = self._row_to_node(row, freq_range, recency_range)
+            scored.append((score, node))
+
+        scored.sort(key=lambda item: (-item[0], _CLASSIFICATION_ORDER.get(item[1].classification, 99), -item[1].frequency))
+        return [node for _, node in scored[:limit]]
 
     def get_by_classification(self, classification: str) -> list[MemoryNode]:
         """Return all memories with the given classification.
@@ -260,22 +277,24 @@ class MemoryStore:
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE classification = ?", (classification,)
         ).fetchall()
-        return [self._row_to_node(row) for row in rows]
+        freq_range, recency_range = self._get_ranges()
+        return [self._row_to_node(row, freq_range, recency_range) for row in rows]
 
-    def decay_cycle(self) -> dict[str, int]:
+    def decay_cycle(self) -> dict[str, list[str]]:
         """Reclassify every memory using current global frequency/recency ranges.
 
         Nodes that have changed classification are updated in the database.
 
         Returns
         -------
-        dict[str, int]
-            Mapping of new classification → count of nodes that *moved* to it.
+        dict[str, list[str]]
+            Mapping of new classification → list of memory IDs that *moved* to it.
+            Only classifications that received at least one node are included.
         """
         rows = self._conn.execute("SELECT * FROM memories").fetchall()
         freq_range, recency_range = self._get_ranges()
 
-        changed: dict[str, int] = {}
+        changed: dict[str, list[str]] = {}
 
         for row in rows:
             old_classification = row["classification"]
@@ -309,7 +328,7 @@ class MemoryStore:
                         ),
                     )
 
-                changed[new_classification] = changed.get(new_classification, 0) + 1
+                changed.setdefault(new_classification, []).append(row["id"])
 
         return changed
 
@@ -336,59 +355,6 @@ class MemoryStore:
             )
 
         return count
-
-    def migrate(self) -> dict[str, list[str]]:
-        """Identify nodes whose classification has drifted and report them.
-
-        Runs a single reclassification pass (like :meth:`decay_cycle`) and
-        returns a mapping of *new* classification → list of memory IDs that
-        moved there.
-
-        Returns
-        -------
-        dict[str, list[str]]
-            ``{"core": [...], "boundary": [...], ...}`` — only non-empty
-            classifications are included.
-        """
-        rows = self._conn.execute("SELECT * FROM memories").fetchall()
-        freq_range, recency_range = self._get_ranges()
-
-        result: dict[str, list[str]] = {}
-
-        for row in rows:
-            old_classification = row["classification"]
-            c = compute_c(
-                row["frequency"],
-                row["recency"],
-                freq_range,
-                recency_range,
-            )
-            new_classification = classify(c, self._max_iter)
-
-            if new_classification != old_classification:
-                iteration_count, _ = iterate(c, self._max_iter)
-                with self._conn:
-                    self._conn.execute(
-                        """
-                        UPDATE memories SET
-                            classification = ?,
-                            c_real = ?,
-                            c_imag = ?,
-                            iteration_count = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            new_classification,
-                            c.real,
-                            c.imag,
-                            iteration_count,
-                            row["id"],
-                        ),
-                    )
-
-                result.setdefault(new_classification, []).append(row["id"])
-
-        return result
 
     def stats(self) -> dict[str, Any]:
         """Return aggregate statistics about the memory store.
@@ -448,19 +414,19 @@ class MemoryStore:
 
         return (freq_min, freq_max), (rec_min, rec_max)
 
-    def _row_to_node(self, row: sqlite3.Row) -> MemoryNode:
+    def _row_to_node(self, row: sqlite3.Row, freq_range: tuple, recency_range: tuple) -> MemoryNode:
         """Convert a SQLite row to a :class:`MemoryNode`.
 
         Parameters
         ----------
-        row: A ``sqlite3.Row`` object from the ``memories`` table.
+        row:           A ``sqlite3.Row`` object from the ``memories`` table.
+        freq_range:    ``(min, max)`` frequency range from :meth:`_get_ranges`.
+        recency_range: ``(min, max)`` recency range from :meth:`_get_ranges`.
 
         Returns
         -------
         MemoryNode
         """
-        freq_range, recency_range = self._get_ranges()
-
         zoom_levels = {
             1: row["zoom_level_1"],
             2: row["zoom_level_2"],
@@ -480,35 +446,6 @@ class MemoryStore:
         node.id = row["id"]
         return node
 
-    def _node_to_row(self, node: MemoryNode, memory_id: str) -> tuple:
-        """Convert a :class:`MemoryNode` to a tuple for SQLite insert/update.
-
-        Parameters
-        ----------
-        node:      The node to serialise.
-        memory_id: UUID for this row.
-
-        Returns
-        -------
-        tuple
-            Values in the column order of the ``memories`` table INSERT.
-        """
-        return (
-            memory_id,
-            node.content,
-            node.frequency,
-            node.recency,
-            node.created_at,
-            node.classification,
-            node.c_value.real,
-            node.c_value.imag,
-            node.iteration_count,
-            node.zoom_levels.get(1, node.content),
-            node.zoom_levels.get(2, node.content),
-            node.zoom_levels.get(3, node.content),
-            "{}",
-        )
-
     def get_all(self) -> list[MemoryNode]:
         """Return all memories sorted by classification priority then frequency.
 
@@ -519,7 +456,8 @@ class MemoryStore:
             then by frequency descending within each bucket.
         """
         rows = self._conn.execute("SELECT * FROM memories").fetchall()
-        nodes = [self._row_to_node(row) for row in rows]
+        freq_range, recency_range = self._get_ranges()
+        nodes = [self._row_to_node(row, freq_range, recency_range) for row in rows]
         nodes.sort(
             key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency)
         )
