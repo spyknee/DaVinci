@@ -346,11 +346,11 @@ class MemoryStore:
         ).fetchone()
 
         if range_row is None or range_row[0] is None:
-            freq_range: tuple[float, float] = (0.0, 0.0)
-            recency_range: tuple[float, float] = (0.0, 0.0)
-        else:
-            freq_range = (float(range_row[0]), float(range_row[1]))
-            recency_range = (float(range_row[2]), float(range_row[3]))
+            # No non-forget nodes — nothing meaningful to reclassify.
+            return {}
+
+        freq_range: tuple[float, float] = (float(range_row[0]), float(range_row[1]))
+        recency_range: tuple[float, float] = (float(range_row[2]), float(range_row[3]))
 
         changed: dict[str, list[str]] = {}
 

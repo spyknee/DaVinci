@@ -12,8 +12,9 @@ patterns.  Iterating z → z² + c determines whether that node:
   * Escapes mid-range              → **decay** — aging data
   * Escapes early                  → **forget** — irrelevant, prune it
 
-Normalisation range: −2 … 2, which covers the full mathematically
-interesting region of the Mandelbrot set.
+Recency normalisation range: −2 … 0.25 (real axis inside the Mandelbrot
+set), so the most recently accessed node maps toward the stable interior
+and the stalest node maps toward the escaping boundary.
 
 No external dependencies — pure Python + stdlib only.
 """
@@ -95,12 +96,15 @@ def compute_c(
 ) -> complex:
     """Build the complex c value that positions a node on the complex plane.
 
-    ``c = normalize(recency) + normalize(frequency) * 1j``
+    ``c = normalize(recency, target=[-2, 0.25]) + normalize(frequency, target=[-1, 1]) * 1j``
 
-    Recency drives the real axis because the Mandelbrot set is symmetric
-    about the real axis: high recency (recently accessed) maps toward +2
-    (bounded → ``core``), while stale memories map toward −2 (escape →
-    ``forget``).  Frequency modulates depth on the imaginary axis.
+    Recency drives the real axis.  The meaningful interior of the Mandelbrot
+    set on the real axis lies in ``[-2, 0.25]``, so high recency (recently
+    accessed) maps toward ``+0.25`` (inside the set → ``core``) while stale
+    memories map toward ``-2`` (escapes → ``forget``).
+
+    Frequency modulates depth on the imaginary axis within ``[-1, 1]``, which
+    keeps the combined ``c`` value well inside the set for active nodes.
 
     Parameters
     ----------
@@ -112,11 +116,14 @@ def compute_c(
     Returns
     -------
     complex
-        A complex number whose real part encodes normalised recency and
-        whose imaginary part encodes normalised frequency.
+        A complex number whose real part encodes normalised recency
+        (mapped to ``[-2.0, 0.25]``) and whose imaginary part encodes
+        normalised frequency (mapped to ``[-1.0, 1.0]``).
     """
-    norm_freq = normalize(frequency, freq_range[0], freq_range[1])
-    norm_recency = normalize(recency, recency_range[0], recency_range[1])
+    norm_recency = normalize(recency, recency_range[0], recency_range[1],
+                             target_min=-2.0, target_max=0.25)
+    norm_freq = normalize(frequency, freq_range[0], freq_range[1],
+                          target_min=-1.0, target_max=1.0)
     return complex(norm_recency, norm_freq)
 
 
