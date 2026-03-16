@@ -31,6 +31,13 @@ __all__ = ["MemoryStore"]
 # Used for search/sort ordering and for decay-cycle hysteresis decisions.
 _CLASSIFICATION_ORDER = {"core": 0, "boundary": 1, "decay": 2, "forget": 3}
 
+# Minimum recency spread used when normalising timestamps.  When all stored
+# memories fall within a window smaller than this value the oldest boundary is
+# pushed back so that the entire session maps near the +0.25 end of the real
+# axis (inside the Mandelbrot set → "core") rather than being spread across the
+# full −2.0 to +0.25 range based on millisecond differences.
+_MIN_RECENCY_SPREAD = 24 * 60 * 60.0  # 24 hours in seconds
+
 
 def _default_zoom_levels(content: str) -> dict[int, str]:
     """Generate default zoom levels from content when none are supplied.
@@ -352,8 +359,8 @@ class MemoryStore:
         freq_range: tuple[float, float] = (float(range_row[0]), float(range_row[1]))
         rec_min = float(range_row[2])
         rec_max = float(range_row[3])
-        if rec_min == rec_max:
-            rec_min = rec_max - 1.0
+        if rec_max - rec_min < _MIN_RECENCY_SPREAD:
+            rec_min = rec_max - _MIN_RECENCY_SPREAD
         recency_range: tuple[float, float] = (rec_min, rec_max)
 
         changed: dict[str, list[str]] = {}
@@ -480,9 +487,13 @@ class MemoryStore:
             Both as ``(min, max)`` tuples.  When the table is empty a
             synthetic recency range of ``(now - 1, now)`` is returned so that
             the first stored node maps to the midpoint rather than the
-            degenerate ``(0, 0)`` range.  When ``rec_min == rec_max``
-            (rapid-fire inserts) ``rec_min`` is nudged down by 1.0 second so
-            normalisation produces a valid spread.
+            degenerate ``(0, 0)`` range.  When the spread between ``rec_min``
+            and ``rec_max`` is smaller than :data:`_MIN_RECENCY_SPREAD`
+            (rapid-fire inserts) ``rec_min`` is pushed back to
+            ``rec_max - _MIN_RECENCY_SPREAD`` so that all memories in the same
+            session map toward the ``+0.25`` end of the real axis (inside the
+            Mandelbrot set → ``core``) rather than spreading across the full
+            ``-2.0`` to ``+0.25`` range based on millisecond differences.
         """
         if now is None:
             now = time.time()
@@ -499,8 +510,8 @@ class MemoryStore:
         rec_min = float(row[2])
         rec_max = float(row[3])
 
-        if rec_min == rec_max:
-            rec_min = rec_max - 1.0
+        if rec_max - rec_min < _MIN_RECENCY_SPREAD:
+            rec_min = rec_max - _MIN_RECENCY_SPREAD
 
         return (freq_min, freq_max), (rec_min, rec_max)
 

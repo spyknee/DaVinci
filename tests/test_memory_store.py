@@ -8,7 +8,7 @@ Run with:
 import time
 import unittest
 
-from davinci.memory.store import MemoryStore
+from davinci.memory.store import MemoryStore, _MIN_RECENCY_SPREAD
 
 
 def _make_store() -> MemoryStore:
@@ -348,7 +348,7 @@ class TestGetRanges(unittest.TestCase):
             rows = store._conn.execute("SELECT recency FROM memories").fetchall()
             self.assertTrue(all(r[0] == now for r in rows))
             _, rec_range = store._get_ranges(now=now)
-            self.assertGreater(rec_range[1] - rec_range[0], 0)
+            self.assertAlmostEqual(rec_range[1] - rec_range[0], _MIN_RECENCY_SPREAD, places=6)
 
     def test_ranges_reflect_stored_data(self):
         with _make_store() as store:
@@ -372,6 +372,21 @@ class TestNewMemoryClassification(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(row)
             self.assertNotEqual(row[0], "forget")
+
+    def test_rapid_fire_memories_are_not_forget(self):
+        """3 memories stored in rapid succession must all be classified as core."""
+        with _make_store() as store:
+            ids = [
+                store.store("test memory one"),
+                store.store("test memory two"),
+                store.store("test memory three"),
+            ]
+            for mid in ids:
+                row = store._conn.execute(
+                    "SELECT classification FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row[0], "core", f"Memory {mid} classification mismatch")
 
 
 class TestDecayCycleDegenerate(unittest.TestCase):
