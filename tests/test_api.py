@@ -156,13 +156,13 @@ class TestDecay(unittest.TestCase):
             result = dv.decay()
             self.assertEqual(result, {})
 
-    def test_decay_values_are_ints(self):
+    def test_decay_values_are_lists(self):
         with DaVinci(":memory:") as dv:
             for i in range(3):
                 dv.remember(f"decay test {i}")
             result = dv.decay()
             for v in result.values():
-                self.assertIsInstance(v, int)
+                self.assertIsInstance(v, list)
 
 
 class TestStats(unittest.TestCase):
@@ -279,20 +279,6 @@ class TestMemories(unittest.TestCase):
             nodes = dv.memories()
             self.assertTrue(hasattr(nodes[0], "id"))
             self.assertIsNotNone(nodes[0].id)
-
-
-class TestMigrate(unittest.TestCase):
-    """migrate() runs without error."""
-
-    def test_migrate_returns_dict(self):
-        with DaVinci(":memory:") as dv:
-            result = dv.migrate()
-            self.assertIsInstance(result, dict)
-
-    def test_migrate_on_empty_store(self):
-        with DaVinci(":memory:") as dv:
-            result = dv.migrate()
-            self.assertEqual(result, {})
 
 
 class TestContextManager(unittest.TestCase):

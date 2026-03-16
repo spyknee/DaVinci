@@ -272,11 +272,6 @@ class TestVoiceInterfaceAdvanced(unittest.TestCase):
             count = vi.consolidate()
             self.assertIsInstance(count, int)
 
-    def test_migrate_returns_dict(self):
-        with _make_vi() as vi:
-            result = vi.migrate()
-            self.assertIsInstance(result, dict)
-
     def test_memories_returns_list(self):
         with _make_vi() as vi:
             vi.remember("memory one")

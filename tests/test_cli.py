@@ -280,19 +280,6 @@ class TestMemoriesCommand(unittest.TestCase):
             os.unlink(db)
 
 
-class TestMigrateCommand(unittest.TestCase):
-    """``migrate`` command runs migration check."""
-
-    def test_migrate_runs_without_error(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db = f.name
-        try:
-            result = _run(["migrate"], db)
-            self.assertEqual(result.returncode, 0, msg=result.stderr)
-        finally:
-            os.unlink(db)
-
-
 class TestDbFlag(unittest.TestCase):
     """``--db`` flag uses the specified database file."""
 

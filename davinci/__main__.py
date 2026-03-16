@@ -12,7 +12,6 @@ consolidate  Run the consolidation engine
 merge     Merge similar memories
 stats     Show memory statistics
 memories  List all (or filtered) memories
-migrate   Run migration check
 """
 
 from __future__ import annotations
@@ -104,8 +103,8 @@ def cmd_decay(dv: DaVinci, _args: argparse.Namespace) -> None:
         print("Decay cycle complete. No memories reclassified.")
     else:
         print("Decay cycle complete. Reclassified memories:")
-        for cls, count in sorted(changed.items()):
-            print(f"  → {cls}: {count}")
+        for cls, ids in sorted(changed.items()):
+            print(f"  → {cls}: {len(ids)}")
 
 
 def cmd_consolidate(dv: DaVinci, args: argparse.Namespace) -> None:
@@ -144,18 +143,6 @@ def cmd_memories(dv: DaVinci, args: argparse.Namespace) -> None:
         else "All memories"
     )
     _print_node_table(nodes, title=f"{title} ({len(nodes)} total):")
-
-
-def cmd_migrate(dv: DaVinci, _args: argparse.Namespace) -> None:
-    result = dv.migrate()
-    if not result:
-        print("Migration check complete. No memories needed reclassification.")
-    else:
-        print("Migration complete. Reclassified memories:")
-        for cls, ids in sorted(result.items()):
-            print(f"  → {cls} ({len(ids)}):")
-            for mid in ids:
-                print(f"      {mid}")
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +222,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filter by classification (core, boundary, decay, forget).",
     )
 
-    # migrate
-    sub.add_parser("migrate", help="Run migration check.")
-
     return parser
 
 
@@ -255,7 +239,6 @@ _COMMANDS = {
     "merge": cmd_merge,
     "stats": cmd_stats,
     "memories": cmd_memories,
-    "migrate": cmd_migrate,
 }
 
 
