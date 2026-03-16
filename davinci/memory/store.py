@@ -59,7 +59,7 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _create_schema(self) -> None:
-        """Create the ``memories`` table, FTS5 index, triggers and indexes."""
+        """Create the ``memories`` table and indexes if they don't exist."""
         with self._conn:
             self._conn.execute(
                 """
@@ -89,32 +89,6 @@ class MemoryStore:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_recency ON memories (recency)"
             )
-            # FTS5 virtual table for full-text search
-            self._conn.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-                USING fts5(content, id UNINDEXED)
-                """
-            )
-            # Triggers to keep FTS5 in sync
-            self._conn.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS memories_ai
-                AFTER INSERT ON memories BEGIN
-                    INSERT INTO memories_fts(id, content) VALUES (new.id, new.content);
-                END
-                """
-            )
-            self._conn.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS memories_ad
-                AFTER DELETE ON memories BEGIN
-                    DELETE FROM memories_fts WHERE id = old.id;
-                END
-                """
-            )
-        # Backfill FTS5 for any rows that pre-date the virtual table
-        self._backfill_fts()
 
     # ------------------------------------------------------------------
     # Public API
@@ -246,69 +220,6 @@ class MemoryStore:
 
         return node
 
-    def search_fts(self, query: str, limit: int = 10) -> list[MemoryNode]:
-        """Return memories matching *query* using FTS5 full-text search.
-
-        Falls back to the existing ``LIKE`` search if the FTS5 query fails
-        (e.g. due to invalid query syntax).
-
-        Results are ordered by classification priority
-        (core → boundary → decay → forget) then by frequency descending.
-
-        Parameters
-        ----------
-        query: Full-text search query string.
-        limit: Maximum number of results to return.
-
-        Returns
-        -------
-        list[MemoryNode]
-        """
-        try:
-            rows = self._conn.execute(
-                """
-                SELECT m.* FROM memories m
-                JOIN memories_fts f ON f.id = m.id
-                WHERE memories_fts MATCH ?
-                ORDER BY m.classification, m.frequency DESC
-                LIMIT ?
-                """,
-                (query, limit),
-            ).fetchall()
-        except Exception:  # noqa: BLE001
-            # FTS5 query syntax error or other failure — fall back to LIKE
-            return self.search(query, limit=limit)
-
-        nodes = [self._row_to_node(row) for row in rows]
-        nodes.sort(
-            key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency)
-        )
-        return nodes[:limit]
-
-    def _backfill_fts(self) -> None:
-        """Populate FTS5 with any existing rows not yet indexed.
-
-        Safe to call multiple times — only inserts rows that are absent
-        from the FTS5 table.
-        """
-        try:
-            existing_ids = {
-                row[0]
-                for row in self._conn.execute("SELECT id FROM memories_fts").fetchall()
-            }
-            rows = self._conn.execute(
-                "SELECT id, content FROM memories"
-            ).fetchall()
-            to_insert = [(row[0], row[1]) for row in rows if row[0] not in existing_ids]
-            if to_insert:
-                with self._conn:
-                    self._conn.executemany(
-                        "INSERT INTO memories_fts(id, content) VALUES (?, ?)",
-                        to_insert,
-                    )
-        except Exception:  # noqa: BLE001
-            pass  # Non-fatal — FTS5 may not be available in all sqlite builds
-
     def search(self, query: str, limit: int = 10) -> list[MemoryNode]:
         """Return memories whose content contains *query* (case-insensitive).
 
@@ -419,30 +330,10 @@ class MemoryStore:
         )
         count = cursor.fetchone()[0]
 
-        if count > 0:
-            # Collect IDs before deletion so we can sync FTS5 manually.
-            # (The AFTER DELETE trigger handles individual rows but explicit
-            # cleanup is more reliable for batch deletes.)
-            ids = [
-                row[0]
-                for row in self._conn.execute(
-                    "SELECT id FROM memories WHERE classification = ?", (classification,)
-                ).fetchall()
-            ]
-            with self._conn:
-                self._conn.execute(
-                    "DELETE FROM memories WHERE classification = ?", (classification,)
-                )
-            # Explicitly clean up FTS5 (belt-and-suspenders alongside the trigger)
-            if ids:
-                try:
-                    with self._conn:
-                        self._conn.executemany(
-                            "DELETE FROM memories_fts WHERE id = ?",
-                            [(i,) for i in ids],
-                        )
-                except Exception:  # noqa: BLE001
-                    pass
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM memories WHERE classification = ?", (classification,)
+            )
 
         return count
 
@@ -498,15 +389,6 @@ class MemoryStore:
                 result.setdefault(new_classification, []).append(row["id"])
 
         return result
-
-    def count(self) -> int:
-        """Return the total number of stored memories.
-
-        Returns
-        -------
-        int
-        """
-        return self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
     def stats(self) -> dict[str, Any]:
         """Return aggregate statistics about the memory store.
