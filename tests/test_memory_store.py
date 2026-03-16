@@ -125,10 +125,17 @@ class TestSearch(unittest.TestCase):
             priorities = [_CLASSIFICATION_ORDER.get(n.classification, 99) for n in results]
             self.assertEqual(priorities, sorted(priorities))
 
-    def test_search_empty_db_returns_empty_list(self):
+    def test_search_ranking_exact_phrase_beats_partial(self):
+        """Exact phrase match should rank higher than partial word match."""
         with _make_store() as store:
-            results = store.search("anything")
-            self.assertEqual(results, [])
+            store.store("the quick brown fox")   # contains exact phrase "quick brown"
+            store.store("quickly done")          # contains "quick" but not exact phrase
+            results = store.search("quick brown")
+            # Both memories match (one exact phrase, one partial word)
+            self.assertEqual(len(results), 2)
+            # The exact phrase match should be the first result
+            self.assertIn("quick brown", results[0].content)
+            self.assertIn("quickly", results[1].content)
 
 
 class TestGetByClassification(unittest.TestCase):
@@ -171,15 +178,16 @@ class TestDecayCycle(unittest.TestCase):
             self.assertEqual(result, {})
 
     def test_decay_cycle_counts_changed_nodes(self):
-        """After a decay cycle on a populated store the result is a dict of ints."""
+        """After a decay cycle on a populated store the result is a dict of lists of IDs."""
         with _make_store() as store:
             for i in range(10):
                 store.store(f"memory {i}")
             result = store.decay_cycle()
             for key, val in result.items():
                 self.assertIn(key, {"core", "boundary", "decay", "forget"})
-                self.assertIsInstance(val, int)
-                self.assertGreaterEqual(val, 0)
+                self.assertIsInstance(val, list)
+                for mid in val:
+                    self.assertIsInstance(mid, str)
 
 
 class TestPrune(unittest.TestCase):
@@ -295,31 +303,6 @@ class TestGetRanges(unittest.TestCase):
             self.assertIsInstance(freq_range[0], float)
             self.assertIsInstance(freq_range[1], float)
             self.assertLessEqual(freq_range[0], freq_range[1])
-
-
-class TestMigrate(unittest.TestCase):
-    """migrate() reports nodes that changed classification."""
-
-    def test_migrate_returns_dict(self):
-        with _make_store() as store:
-            store.store("test")
-            result = store.migrate()
-            self.assertIsInstance(result, dict)
-
-    def test_migrate_on_empty_store(self):
-        with _make_store() as store:
-            result = store.migrate()
-            self.assertEqual(result, {})
-
-    def test_migrate_ids_are_strings(self):
-        with _make_store() as store:
-            for i in range(5):
-                store.store(f"migrate test {i}")
-            result = store.migrate()
-            for ids in result.values():
-                for mid in ids:
-                    self.assertIsInstance(mid, str)
-
 
 if __name__ == "__main__":
     unittest.main()
