@@ -323,8 +323,8 @@ class TestGetRanges(unittest.TestCase):
     def test_empty_db_returns_default_ranges(self):
         with _make_store() as store:
             freq_range, rec_range = store._get_ranges()
-            self.assertEqual(freq_range, (0.0, 1.0))
-            self.assertEqual(rec_range, (0.0, 1.0))
+            self.assertEqual(freq_range, (0.0, 0.0))
+            self.assertEqual(rec_range, (0.0, 0.0))
 
     def test_ranges_reflect_stored_data(self):
         with _make_store() as store:
@@ -334,6 +334,48 @@ class TestGetRanges(unittest.TestCase):
             self.assertIsInstance(freq_range[0], float)
             self.assertIsInstance(freq_range[1], float)
             self.assertLessEqual(freq_range[0], freq_range[1])
+
+
+class TestNewMemoryClassification(unittest.TestCase):
+    """Verify new memories are never immediately classified as forget."""
+
+    def test_first_stored_memory_is_not_forget(self):
+        """A single stored-then-retrieved memory must not be classified forget."""
+        with _make_store() as store:
+            mid = store.store("brand new memory")
+            node = store.retrieve(mid)
+            self.assertIsNotNone(node)
+            self.assertNotEqual(node.classification, "forget")
+
+
+class TestDecayCycleHysteresis(unittest.TestCase):
+    """decay_cycle() hysteresis suppresses minor tier improvements."""
+
+    def test_decay_cycle_hysteresis(self):
+        """A memory in boundary should not jump to core in a single decay cycle."""
+        with _make_store() as store:
+            mid = store.store("stable memory")
+
+            # Access many times so classify() will return 'core' for this node
+            for _ in range(10):
+                store.retrieve(mid)
+
+            # Override the DB classification to 'boundary' — simulating a node
+            # that was recently boundary and now barely qualifies for core.
+            # Without hysteresis it would immediately flip; with it, it stays.
+            store._conn.execute(
+                "UPDATE memories SET classification = 'boundary' WHERE id = ?", (mid,)
+            )
+            store._conn.commit()
+
+            # decay_cycle re-evaluates; classify() returns 'core', but the 1-tier
+            # improvement (boundary→core) must be suppressed by hysteresis.
+            store.decay_cycle()
+
+            row = store._conn.execute(
+                "SELECT classification FROM memories WHERE id = ?", (mid,)
+            ).fetchone()
+            self.assertEqual(row[0], "boundary")
 
 if __name__ == "__main__":
     unittest.main()

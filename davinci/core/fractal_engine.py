@@ -95,7 +95,12 @@ def compute_c(
 ) -> complex:
     """Build the complex c value that positions a node on the complex plane.
 
-    ``c = normalize(frequency) + normalize(recency) * 1j``
+    ``c = normalize(recency) + normalize(frequency) * 1j``
+
+    Recency drives the real axis because the Mandelbrot set is symmetric
+    about the real axis: high recency (recently accessed) maps toward +2
+    (bounded → ``core``), while stale memories map toward −2 (escape →
+    ``forget``).  Frequency modulates depth on the imaginary axis.
 
     Parameters
     ----------
@@ -107,12 +112,12 @@ def compute_c(
     Returns
     -------
     complex
-        A complex number whose real part encodes normalised frequency and
-        whose imaginary part encodes normalised recency.
+        A complex number whose real part encodes normalised recency and
+        whose imaginary part encodes normalised frequency.
     """
     norm_freq = normalize(frequency, freq_range[0], freq_range[1])
     norm_recency = normalize(recency, recency_range[0], recency_range[1])
-    return complex(norm_freq, norm_recency)
+    return complex(norm_recency, norm_freq)
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +207,9 @@ class MemoryNode:
     content:       The actual data stored in this node.
     frequency:     Initial access count (default 0).
     recency:       Timestamp of last access (default: *now*).
-    freq_range:    (min, max) used to normalise frequency (default (0, 1)).
-    recency_range: (min, max) used to normalise recency   (default (0, 1)).
+    freq_range:    (min, max) used to normalise frequency (default (0, 0) —
+                   degenerate range so a lone node maps to c = 0+0j → core).
+    recency_range: (min, max) used to normalise recency   (default (0, 0)).
     max_iter:      Mandelbrot iteration limit (default 1 000).
     zoom_levels:   Pre-populated zoom-level content dict (optional).
 
@@ -224,8 +230,8 @@ class MemoryNode:
         content: str,
         frequency: int = 0,
         recency: float | None = None,
-        freq_range: tuple[float, float] = (0.0, 1.0),
-        recency_range: tuple[float, float] = (0.0, 1.0),
+        freq_range: tuple[float, float] = (0.0, 0.0),
+        recency_range: tuple[float, float] = (0.0, 0.0),
         max_iter: int = 1000,
         zoom_levels: dict[int, str] | None = None,
     ) -> None:
@@ -320,8 +326,8 @@ class MemoryNode:
         zoom_raw = data.get("zoom_levels", {})
         zoom_levels = {int(k): v for k, v in zoom_raw.items()}
 
-        raw_freq = data.get("_freq_range", [0.0, 1.0])
-        raw_recency = data.get("_recency_range", [0.0, 1.0])
+        raw_freq = data.get("_freq_range", [0.0, 0.0])
+        raw_recency = data.get("_recency_range", [0.0, 0.0])
         freq_range: tuple[float, float] = (float(raw_freq[0]), float(raw_freq[1]))
         recency_range: tuple[float, float] = (float(raw_recency[0]), float(raw_recency[1]))
 
