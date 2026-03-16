@@ -214,9 +214,13 @@ class MemoryNode:
     content:       The actual data stored in this node.
     frequency:     Initial access count (default 0).
     recency:       Timestamp of last access (default: *now*).
-    freq_range:    (min, max) used to normalise frequency (default (0, 0) —
-                   degenerate range so a lone node maps to c = 0+0j → core).
-    recency_range: (min, max) used to normalise recency   (default (0, 0)).
+    freq_range:    (min, max) used to normalise frequency.  The store always
+                   provides a meaningful range; the ``(0, 0)`` default is only
+                   used when constructing nodes outside the store context.
+    recency_range: (min, max) used to normalise recency.  The store always
+                   provides a meaningful range (synthetic 1-second window when
+                   the DB is empty) so that new nodes map to ``target_max``
+                   and are classified as ``"core"``.
     max_iter:      Mandelbrot iteration limit (default 1 000).
     zoom_levels:   Pre-populated zoom-level content dict (optional).
 

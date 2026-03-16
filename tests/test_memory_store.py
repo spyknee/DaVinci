@@ -320,11 +320,17 @@ class TestContextManager(unittest.TestCase):
 class TestGetRanges(unittest.TestCase):
     """_get_ranges() private helper."""
 
-    def test_empty_db_returns_default_ranges(self):
+    def test_empty_db_returns_synthetic_recency_range(self):
+        """Empty DB must return a 1-second synthetic recency range anchored to now."""
+        before = time.time()
         with _make_store() as store:
             freq_range, rec_range = store._get_ranges()
-            self.assertEqual(freq_range, (0.0, 0.0))
-            self.assertEqual(rec_range, (0.0, 0.0))
+        after = time.time()
+        self.assertEqual(freq_range, (0.0, 0.0))
+        # rec_range should be (now-1, now) — a 1-second window
+        self.assertAlmostEqual(rec_range[1] - rec_range[0], 1.0, places=6)
+        self.assertGreaterEqual(rec_range[1], before)
+        self.assertLessEqual(rec_range[1], after + 0.01)
 
     def test_ranges_reflect_stored_data(self):
         with _make_store() as store:
@@ -346,6 +352,39 @@ class TestNewMemoryClassification(unittest.TestCase):
             node = store.retrieve(mid)
             self.assertIsNotNone(node)
             self.assertNotEqual(node.classification, "forget")
+
+    def test_first_memory_not_forget(self):
+        """First memory in an empty store must not be 'forget' or 'decay'."""
+        with _make_store() as store:
+            mid = store.store("first ever memory")
+            node = store.retrieve(mid)
+            self.assertIsNotNone(node)
+            self.assertNotIn(node.classification, {"forget", "decay"})
+
+    def test_first_memory_is_core_or_boundary(self):
+        """First memory in an empty store must classify as 'core' or 'boundary'."""
+        with _make_store() as store:
+            mid = store.store("first memory for classification check")
+            node = store.retrieve(mid)
+            self.assertIsNotNone(node)
+            self.assertIn(node.classification, {"core", "boundary"})
+
+    def test_rapid_succession_memories_not_forget(self):
+        """Memories stored in rapid succession (no sleep) must not be 'forget'."""
+        with _make_store() as store:
+            ids = [store.store(f"rapid memory {i}") for i in range(5)]
+            # Check the classification stored in the DB at insert time
+            # (before any retrieve() call that would update access patterns).
+            for mid in ids:
+                row = store._conn.execute(
+                    "SELECT classification FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertNotEqual(
+                    row[0],
+                    "forget",
+                    msg=f"Memory {mid} classified as 'forget' immediately after storage",
+                )
 
 
 class TestDecayCycleHysteresis(unittest.TestCase):

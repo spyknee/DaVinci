@@ -467,20 +467,31 @@ class MemoryStore:
         Returns
         -------
         (freq_range, recency_range)
-            Both as ``(min, max)`` tuples.  Falls back to ``(0, 0)`` when the
-            table is empty to avoid degenerate normalisation.
+            Both as ``(min, max)`` tuples.  When the table is empty, returns a
+            synthetic 1-second recency range anchored to *now* so that a newly
+            inserted node (whose ``recency`` ≈ ``now``) maps to ``target_max``
+            (``+0.25``) and is classified as ``"core"`` rather than landing on
+            the degenerate midpoint.
         """
         row = self._conn.execute(
             "SELECT MIN(frequency), MAX(frequency), MIN(recency), MAX(recency) FROM memories"
         ).fetchone()
 
         if row is None or row[0] is None:
-            return (0.0, 0.0), (0.0, 0.0)
+            # Empty DB: use a synthetic 1-second recency range so that new
+            # nodes (recency=now) map to target_max (+0.25) → "core".
+            now = time.time()
+            return (0.0, 0.0), (now - 1.0, now)
 
         freq_min = float(row[0])
         freq_max = float(row[1])
         rec_min = float(row[2])
         rec_max = float(row[3])
+
+        # If all recency values are identical (e.g. rapid-fire inserts), use a
+        # synthetic 1-second range so the common recency maps to target_max.
+        if rec_min == rec_max:
+            rec_min = rec_max - 1.0
 
         return (freq_min, freq_max), (rec_min, rec_max)
 
