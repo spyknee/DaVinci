@@ -243,7 +243,19 @@ class MemoryStore:
         query_lower = query.lower()
         words = query_lower.split()
 
-        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        if not words:
+            return []
+
+        # Pre-filter in SQLite: rows must contain at least one word.
+        # Cap at 15 words to prevent excessive OR clause construction.
+        words = words[:15]
+        where_clauses = " OR ".join(["content LIKE ? COLLATE NOCASE"] * len(words))
+        params = [f"%{w}%" for w in words]
+        rows = self._conn.execute(
+            f"SELECT * FROM memories WHERE {where_clauses}",
+            params,
+        ).fetchall()
+
         freq_range, recency_range = self._get_ranges()
 
         scored: list[tuple[int, MemoryNode]] = []

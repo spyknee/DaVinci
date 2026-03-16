@@ -85,6 +85,11 @@ class TestStoreAndRetrieve(unittest.TestCase):
 class TestSearch(unittest.TestCase):
     """Search functionality."""
 
+    def test_search_empty_db_returns_empty_list(self):
+        with _make_store() as store:
+            results = store.search("anything")
+            self.assertEqual(results, [])
+
     def test_search_returns_matching_nodes(self):
         with _make_store() as store:
             store.store("the quick brown fox")
