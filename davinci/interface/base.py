@@ -103,13 +103,13 @@ class BaseInterface(abc.ABC):
         """
 
     @abc.abstractmethod
-    def decay(self) -> dict[str, int]:
+    def decay(self) -> dict[str, list[str]]:
         """Run a decay cycle, reclassifying all memories.
 
         Returns
         -------
-        dict[str, int]
-            Mapping of new classification → count of nodes that moved to it.
+        dict[str, list[str]]
+            Mapping of new classification → list of memory IDs that moved to it.
         """
 
     @abc.abstractmethod
@@ -149,16 +149,6 @@ class BaseInterface(abc.ABC):
         dict
             Keys: ``total``, ``by_classification``, ``avg_frequency``,
             ``oldest_timestamp``, ``newest_timestamp``.
-        """
-
-    @abc.abstractmethod
-    def migrate(self) -> dict[str, list[str]]:
-        """Run a migration check and reclassify drifted memories.
-
-        Returns
-        -------
-        dict[str, list[str]]
-            Mapping of new classification → list of memory IDs that moved.
         """
 
     @abc.abstractmethod

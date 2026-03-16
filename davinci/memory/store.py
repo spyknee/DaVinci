@@ -31,6 +31,33 @@ __all__ = ["MemoryStore"]
 _CLASSIFICATION_ORDER = {"core": 0, "boundary": 1, "decay": 2, "forget": 3}
 
 
+def _default_zoom_levels(content: str) -> dict[int, str]:
+    """Generate default zoom levels from content when none are supplied.
+
+    Parameters
+    ----------
+    content: The full text content of the memory.
+
+    Returns
+    -------
+    dict[int, str]
+        ``{1: zoom1, 2: zoom2, 3: content}`` where zoom1 is the first
+        sentence (up to 100 chars) and zoom2 is the first 500 chars.
+    """
+    # Zoom 1: first sentence or first 100 chars, whichever is shorter
+    first_sentence_end = content.find('. ')
+    if 0 < first_sentence_end <= 100:
+        zoom1 = content[:first_sentence_end + 1]
+    else:
+        zoom1 = content[:100] + ("…" if len(content) > 100 else "")
+
+    # Zoom 2: first 500 chars
+    zoom2 = content[:500] + ("…" if len(content) > 500 else "")
+
+    # Zoom 3: full content
+    return {1: zoom1, 2: zoom2, 3: content}
+
+
 class MemoryStore:
     """SQLite-backed store for fractal :class:`~davinci.core.fractal_engine.MemoryNode` objects.
 
@@ -117,7 +144,7 @@ class MemoryStore:
         freq_range, recency_range = self._get_ranges()
         now = time.time()
 
-        zl = zoom_levels or {1: content, 2: content, 3: content}
+        zl = zoom_levels or _default_zoom_levels(content)
 
         node = MemoryNode(
             content=content,

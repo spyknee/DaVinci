@@ -81,6 +81,32 @@ class TestStoreAndRetrieve(unittest.TestCase):
             self.assertEqual(node.zoom_levels[2], "detail")
             self.assertEqual(node.zoom_levels[3], "full text of the memory")
 
+    def test_default_zoom_level_3_equals_full_content(self):
+        """When no zoom_levels supplied, zoom level 3 equals the full content."""
+        content = "A" * 200
+        with _make_store() as store:
+            mid = store.store(content)
+            node = store.retrieve(mid)
+            self.assertEqual(node.zoom_levels[3], content)
+
+    def test_default_zoom_level_1_differs_from_level_3_for_long_content(self):
+        """When no zoom_levels supplied, zoom 1 ≠ zoom 3 for content > 100 chars."""
+        content = "B" * 200
+        with _make_store() as store:
+            mid = store.store(content)
+            node = store.retrieve(mid)
+            self.assertNotEqual(node.zoom_levels[1], node.zoom_levels[3])
+
+    def test_explicit_zoom_levels_are_respected(self):
+        """Explicitly supplied zoom_levels override the defaults."""
+        zoom = {1: "custom1", 2: "custom2", 3: "custom3"}
+        with _make_store() as store:
+            mid = store.store("any content", zoom_levels=zoom)
+            node = store.retrieve(mid)
+            self.assertEqual(node.zoom_levels[1], "custom1")
+            self.assertEqual(node.zoom_levels[2], "custom2")
+            self.assertEqual(node.zoom_levels[3], "custom3")
+
 
 class TestSearch(unittest.TestCase):
     """Search functionality."""

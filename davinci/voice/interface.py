@@ -235,10 +235,6 @@ class VoiceInterface(BaseInterface):
         """Return aggregate statistics about the memory store."""
         return self._davinci.stats()
 
-    def migrate(self) -> dict[str, list[str]]:
-        """Run a migration check and reclassify drifted memories."""
-        return self._davinci.migrate()
-
     def memories(self, classification: str | None = None) -> list[MemoryNode]:
         """Return all memories, optionally filtered by classification."""
         return self._davinci.memories(classification)

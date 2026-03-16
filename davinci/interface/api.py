@@ -127,13 +127,13 @@ class DaVinci(BaseInterface):
         """
         return self._store.prune(classification)
 
-    def decay(self) -> dict[str, int]:
+    def decay(self) -> dict[str, list[str]]:
         """Reclassify all memories using current global access ranges.
 
         Returns
         -------
-        dict[str, int]
-            Mapping ``{new_classification: count_of_nodes_moved}``.
+        dict[str, list[str]]
+            Mapping ``{new_classification: list_of_memory_ids_moved}``.
         """
         return self._store.decay_cycle()
 
@@ -175,16 +175,6 @@ class DaVinci(BaseInterface):
             ``oldest_timestamp``, ``newest_timestamp``.
         """
         return self._store.stats()
-
-    def migrate(self) -> dict[str, list[str]]:
-        """Identify and update memories whose classification has drifted.
-
-        Returns
-        -------
-        dict[str, list[str]]
-            ``{new_classification: [memory_id, ...]}`` for moved memories.
-        """
-        return self._store.migrate()
 
     def memories(self, classification: str | None = None) -> list[MemoryNode]:
         """Return all memories, optionally filtered by classification.
