@@ -12,6 +12,8 @@ consolidate  Run the consolidation engine
 merge     Merge similar memories
 stats     Show memory statistics
 memories  List all (or filtered) memories
+ingest    Summarise text via LM Studio and store as a memory
+ask       Reason over stored memories via LM Studio
 """
 
 from __future__ import annotations
@@ -145,6 +147,49 @@ def cmd_memories(dv: DaVinci, args: argparse.Namespace) -> None:
     _print_node_table(nodes, title=f"{title} ({len(nodes)} total):")
 
 
+def cmd_ingest(dv: DaVinci, args: argparse.Namespace) -> None:
+    from davinci.llm import LMStudioClient
+
+    if args.file and args.content:
+        print("Error: provide either content or --file, not both.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.file:
+        try:
+            with open(args.file, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            print(f"Error reading file: {exc}", file=sys.stderr)
+            sys.exit(1)
+    elif args.content:
+        text = args.content
+    else:
+        print("Error: provide content or --file.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with LMStudioClient(store=dv._store) as client:
+            for chunk in client.ingest(text):
+                print(chunk, end="", flush=True)
+        print()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
+    from davinci.llm import LMStudioClient
+
+    try:
+        with LMStudioClient(store=dv._store) as client:
+            for chunk in client.reason(args.query, limit=args.limit):
+                print(chunk, end="", flush=True)
+        print()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -222,6 +267,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filter by classification (core, boundary, decay, forget).",
     )
 
+    # ingest
+    p_ingest = sub.add_parser(
+        "ingest",
+        help="Summarise text via LM Studio and store as a memory.",
+    )
+    p_ingest.add_argument(
+        "content",
+        nargs="?",
+        default=None,
+        help="Text content to ingest.",
+    )
+    p_ingest.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Read content from a file instead of a positional argument.",
+    )
+
+    # ask
+    p_ask = sub.add_parser(
+        "ask",
+        help="Reason over stored memories via LM Studio.",
+    )
+    p_ask.add_argument("query", help="Query string.")
+    p_ask.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Maximum number of memories to include as context (default: 5).",
+    )
+
     return parser
 
 
@@ -239,6 +316,8 @@ _COMMANDS = {
     "merge": cmd_merge,
     "stats": cmd_stats,
     "memories": cmd_memories,
+    "ingest": cmd_ingest,
+    "ask": cmd_ask,
 }
 
 
