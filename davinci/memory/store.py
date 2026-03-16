@@ -142,8 +142,8 @@ class MemoryStore:
         str
             UUID of the newly created memory.
         """
-        freq_range, recency_range = self._get_ranges()
         now = time.time()
+        freq_range, recency_range = self._get_ranges(now=now)
 
         zl = zoom_levels or _default_zoom_levels(content)
 
@@ -350,7 +350,11 @@ class MemoryStore:
             return {}
 
         freq_range: tuple[float, float] = (float(range_row[0]), float(range_row[1]))
-        recency_range: tuple[float, float] = (float(range_row[2]), float(range_row[3]))
+        rec_min = float(range_row[2])
+        rec_max = float(range_row[3])
+        if rec_min == rec_max:
+            rec_min = rec_max - 1.0
+        recency_range: tuple[float, float] = (rec_min, rec_max)
 
         changed: dict[str, list[str]] = {}
 
@@ -461,26 +465,42 @@ class MemoryStore:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _get_ranges(self) -> tuple[tuple[float, float], tuple[float, float]]:
+    def _get_ranges(self, now: float | None = None) -> tuple[tuple[float, float], tuple[float, float]]:
         """Query DB for min/max frequency and recency.
+
+        Parameters
+        ----------
+        now:
+            Reference timestamp used to build a synthetic recency range when
+            the table is empty.  Defaults to ``time.time()`` when omitted.
 
         Returns
         -------
         (freq_range, recency_range)
-            Both as ``(min, max)`` tuples.  Falls back to ``(0, 0)`` when the
-            table is empty to avoid degenerate normalisation.
+            Both as ``(min, max)`` tuples.  When the table is empty a
+            synthetic recency range of ``(now - 1, now)`` is returned so that
+            the first stored node maps to the midpoint rather than the
+            degenerate ``(0, 0)`` range.  When ``rec_min == rec_max``
+            (rapid-fire inserts) ``rec_min`` is nudged down by 1.0 second so
+            normalisation produces a valid spread.
         """
+        if now is None:
+            now = time.time()
+
         row = self._conn.execute(
             "SELECT MIN(frequency), MAX(frequency), MIN(recency), MAX(recency) FROM memories"
         ).fetchone()
 
         if row is None or row[0] is None:
-            return (0.0, 0.0), (0.0, 0.0)
+            return (0.0, 0.0), (now - 1.0, now)
 
         freq_min = float(row[0])
         freq_max = float(row[1])
         rec_min = float(row[2])
         rec_max = float(row[3])
+
+        if rec_min == rec_max:
+            rec_min = rec_max - 1.0
 
         return (freq_min, freq_max), (rec_min, rec_max)
 

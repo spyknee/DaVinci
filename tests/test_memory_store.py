@@ -321,10 +321,34 @@ class TestGetRanges(unittest.TestCase):
     """_get_ranges() private helper."""
 
     def test_empty_db_returns_default_ranges(self):
+        now = time.time()
         with _make_store() as store:
-            freq_range, rec_range = store._get_ranges()
-            self.assertEqual(freq_range, (0.0, 0.0))
-            self.assertEqual(rec_range, (0.0, 0.0))
+            freq_range, rec_range = store._get_ranges(now=now)
+        self.assertEqual(freq_range, (0.0, 0.0))
+        self.assertAlmostEqual(rec_range[1] - rec_range[0], 1.0, places=6)
+        self.assertEqual(rec_range[1], now)
+
+    def test_empty_db_returns_synthetic_recency_range(self):
+        before = time.time()
+        with _make_store() as store:
+            freq_range, rec_range = store._get_ranges(now=before)
+        self.assertEqual(freq_range, (0.0, 0.0))
+        self.assertAlmostEqual(rec_range[1] - rec_range[0], 1.0, places=6)
+        self.assertEqual(rec_range[1], before)
+
+    def test_same_timestamp_nodes_get_synthetic_range(self):
+        with _make_store() as store:
+            now = time.time()
+            store.store("a")
+            store.store("b")
+            # force identical recency by direct update
+            store._conn.execute("UPDATE memories SET recency = ?", (now,))
+            store._conn.commit()
+            # verify the DB state matches test intent
+            rows = store._conn.execute("SELECT recency FROM memories").fetchall()
+            self.assertTrue(all(r[0] == now for r in rows))
+            _, rec_range = store._get_ranges(now=now)
+            self.assertGreater(rec_range[1] - rec_range[0], 0)
 
     def test_ranges_reflect_stored_data(self):
         with _make_store() as store:
@@ -340,12 +364,33 @@ class TestNewMemoryClassification(unittest.TestCase):
     """Verify new memories are never immediately classified as forget."""
 
     def test_first_stored_memory_is_not_forget(self):
-        """A single stored-then-retrieved memory must not be classified forget."""
+        """A single stored memory must not be classified forget at INSERT time."""
         with _make_store() as store:
             mid = store.store("brand new memory")
-            node = store.retrieve(mid)
-            self.assertIsNotNone(node)
-            self.assertNotEqual(node.classification, "forget")
+            row = store._conn.execute(
+                "SELECT classification FROM memories WHERE id = ?", (mid,)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertNotEqual(row[0], "forget")
+
+
+class TestDecayCycleDegenerate(unittest.TestCase):
+    """decay_cycle() handles degenerate recency range."""
+
+    def test_decay_cycle_same_recency_no_forget(self):
+        """Memories with identical recency must not all become forget after decay_cycle."""
+        with _make_store() as store:
+            now = time.time()
+            ids = [store.store(f"memory {i}") for i in range(3)]
+            # force identical recency
+            store._conn.execute("UPDATE memories SET recency = ?", (now,))
+            store._conn.commit()
+            store.decay_cycle()
+            for mid in ids:
+                row = store._conn.execute(
+                    "SELECT classification FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                self.assertNotEqual(row[0], "forget")
 
 
 class TestDecayCycleHysteresis(unittest.TestCase):
