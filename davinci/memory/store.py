@@ -27,7 +27,8 @@ from davinci.core.fractal_engine import (
 
 __all__ = ["MemoryStore"]
 
-# Classification priority order (used for search result ordering)
+# Classification priority order: core (best) → forget (worst).
+# Used for search/sort ordering and for decay-cycle hysteresis decisions.
 _CLASSIFICATION_ORDER = {"core": 0, "boundary": 1, "decay": 2, "forget": 3}
 
 
@@ -323,6 +324,12 @@ class MemoryStore:
         """Reclassify every memory using current global frequency/recency ranges.
 
         Nodes that have changed classification are updated in the database.
+        Ranges are computed excluding nodes already classified as ``forget``
+        so that stale outliers do not skew the active distribution.
+
+        Hysteresis is applied: a node only updates if it is decaying (moving
+        toward ``forget``) OR improving by at least two full tiers.  This
+        prevents classification flickering at tier boundaries.
 
         Returns
         -------
@@ -331,7 +338,19 @@ class MemoryStore:
             Only classifications that received at least one node are included.
         """
         rows = self._conn.execute("SELECT * FROM memories").fetchall()
-        freq_range, recency_range = self._get_ranges()
+
+        # Compute ranges excluding current forget nodes to avoid skew
+        range_row = self._conn.execute(
+            """SELECT MIN(frequency), MAX(frequency), MIN(recency), MAX(recency)
+               FROM memories WHERE classification != 'forget'"""
+        ).fetchone()
+
+        if range_row is None or range_row[0] is None:
+            freq_range: tuple[float, float] = (0.0, 0.0)
+            recency_range: tuple[float, float] = (0.0, 0.0)
+        else:
+            freq_range = (float(range_row[0]), float(range_row[1]))
+            recency_range = (float(range_row[2]), float(range_row[3]))
 
         changed: dict[str, list[str]] = {}
 
@@ -346,28 +365,40 @@ class MemoryStore:
             new_classification = classify(c, self._max_iter)
 
             if new_classification != old_classification:
-                iteration_count, _ = iterate(c, self._max_iter)
+                old_priority = _CLASSIFICATION_ORDER.get(old_classification, 99)
+                new_priority = _CLASSIFICATION_ORDER.get(new_classification, 99)
 
-                with self._conn:
-                    self._conn.execute(
-                        """
-                        UPDATE memories SET
-                            classification = ?,
-                            c_real = ?,
-                            c_imag = ?,
-                            iteration_count = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            new_classification,
-                            c.real,
-                            c.imag,
-                            iteration_count,
-                            row["id"],
-                        ),
-                    )
+                # Allow decay (getting worse) freely; require 2+ tier improvement
+                if new_priority > old_priority:
+                    should_update = True   # always decay
+                elif old_priority - new_priority >= 2:
+                    should_update = True   # significant improvement
+                else:
+                    should_update = False  # suppress minor flicker (e.g. boundary ↔ core)
 
-                changed.setdefault(new_classification, []).append(row["id"])
+                if should_update:
+                    iteration_count, _ = iterate(c, self._max_iter)
+
+                    with self._conn:
+                        self._conn.execute(
+                            """
+                            UPDATE memories SET
+                                classification = ?,
+                                c_real = ?,
+                                c_imag = ?,
+                                iteration_count = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                new_classification,
+                                c.real,
+                                c.imag,
+                                iteration_count,
+                                row["id"],
+                            ),
+                        )
+
+                    changed.setdefault(new_classification, []).append(row["id"])
 
         return changed
 
@@ -436,7 +467,7 @@ class MemoryStore:
         Returns
         -------
         (freq_range, recency_range)
-            Both as ``(min, max)`` tuples.  Falls back to ``(0, 1)`` when the
+            Both as ``(min, max)`` tuples.  Falls back to ``(0, 0)`` when the
             table is empty to avoid degenerate normalisation.
         """
         row = self._conn.execute(
@@ -444,7 +475,7 @@ class MemoryStore:
         ).fetchone()
 
         if row is None or row[0] is None:
-            return (0.0, 1.0), (0.0, 1.0)
+            return (0.0, 0.0), (0.0, 0.0)
 
         freq_min = float(row[0])
         freq_max = float(row[1])
@@ -483,6 +514,12 @@ class MemoryStore:
         )
         node.created_at = row["created_at"]
         node.id = row["id"]
+        # Restore the persisted fractal values from the DB row rather than using
+        # the recomputed ones from __init__.  Callers that need the *current*
+        # classification (e.g. retrieve()) must call node._recompute() explicitly.
+        node.classification = row["classification"]
+        node.c_value = complex(row["c_real"], row["c_imag"])
+        node.iteration_count = row["iteration_count"]
         return node
 
     def get_all(self) -> list[MemoryNode]:

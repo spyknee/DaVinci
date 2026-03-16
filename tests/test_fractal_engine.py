@@ -85,20 +85,35 @@ class TestComputeC(unittest.TestCase):
 
     def test_max_frequency_real_part(self):
         c = compute_c(10, 5, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, 2.0)
+        self.assertAlmostEqual(c.imag, 2.0)
 
     def test_max_recency_imag_part(self):
         c = compute_c(5, 10, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.imag, 2.0)
+        self.assertAlmostEqual(c.real, 2.0)
 
     def test_min_frequency_real_part(self):
         c = compute_c(0, 5, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, -2.0)
+        self.assertAlmostEqual(c.imag, -2.0)
 
     def test_real_and_imag_independent(self):
+        # recency=10 (max) → real=+2; frequency=0 (min) → imag=-2
         c = compute_c(0, 10, (0, 10), (0, 10))
-        self.assertAlmostEqual(c.real, -2.0)
-        self.assertAlmostEqual(c.imag, 2.0)
+        self.assertAlmostEqual(c.real, 2.0)
+        self.assertAlmostEqual(c.imag, -2.0)
+
+    def test_compute_c_recency_on_real_axis(self):
+        """After Fix 1, recency drives the real part of c."""
+        # With recency=1 (non-midpoint of [0,10]), the real part must be non-zero
+        c = compute_c(frequency=0, recency=1.0, freq_range=(0, 10), recency_range=(0, 10))
+        self.assertNotAlmostEqual(c.real, 0.0)
+        self.assertAlmostEqual(c.real, normalize(1.0, 0, 10))
+
+    def test_new_memory_with_empty_ranges_is_core(self):
+        """MemoryNode with default (0, 0) ranges places c=0+0j → core."""
+        node = MemoryNode(content="x", frequency=0)
+        self.assertAlmostEqual(node.c_value.real, 0.0)
+        self.assertAlmostEqual(node.c_value.imag, 0.0)
+        self.assertEqual(node.classification, "core")
 
 
 # ---------------------------------------------------------------------------
