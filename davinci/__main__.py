@@ -14,12 +14,14 @@ stats     Show memory statistics
 memories  List all (or filtered) memories
 ingest    Summarise text via LM Studio and store as a memory
 ask       Reason over stored memories via LM Studio
+maintain  Run the background memory maintenance loop
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import Any
 
 from davinci.interface.api import DaVinci
@@ -190,6 +192,39 @@ def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_maintain(dv: DaVinci, args: argparse.Namespace) -> None:
+    from davinci.memory import MemoryMaintenance
+
+    def _print_cycle(stats: dict) -> None:
+        decayed_count = sum(len(v) for v in stats["decayed"].values())
+        print(
+            f"[maintenance] decayed={decayed_count} "
+            f"merged={stats['merged']} "
+            f"pruned={stats['pruned']}"
+        )
+
+    maintenance = MemoryMaintenance(
+        store=dv._store,
+        interval=args.interval,
+        on_cycle=_print_cycle,
+    )
+
+    if args.once:
+        stats = maintenance.run_once()
+        _print_cycle(stats)
+        return
+
+    print(f"[maintenance] started (interval={args.interval}s) — Ctrl-C to stop")
+    maintenance.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        maintenance.stop()
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -299,6 +334,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum number of memories to include as context (default: 5).",
     )
 
+    # maintain
+    p_maintain = sub.add_parser(
+        "maintain",
+        help="Run the background memory maintenance loop.",
+    )
+    p_maintain.add_argument(
+        "--interval",
+        type=float,
+        default=300,
+        metavar="SECONDS",
+        help="Seconds between maintenance cycles (default: 300).",
+    )
+    p_maintain.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one cycle and exit.",
+    )
+
     return parser
 
 
@@ -318,6 +371,7 @@ _COMMANDS = {
     "memories": cmd_memories,
     "ingest": cmd_ingest,
     "ask": cmd_ask,
+    "maintain": cmd_maintain,
 }
 
 

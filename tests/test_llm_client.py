@@ -13,6 +13,7 @@ import unittest
 import warnings
 from unittest.mock import MagicMock, patch
 
+from davinci.llm.client import LMStudioClient
 from davinci.memory.store import MemoryStore
 
 
@@ -36,52 +37,31 @@ def _make_chunk(content: str) -> MagicMock:
     return c
 
 
-def _make_client_cls(models: list, chunks: list | None = None) -> MagicMock:
-    """Return a mock ``lmstudio.Client`` class.
-
-    Parameters
-    ----------
-    models:
-        List of mock model objects returned by ``list_loaded()``.
-    chunks:
-        Optional list of mock chunk objects yielded by ``respond_stream()``.
-    """
-    mock_client_instance = MagicMock()
-    mock_client_instance.llm.list_loaded.return_value = models
-    if chunks is not None:
-        mock_client_instance.llm.respond_stream.return_value = iter(chunks)
-    mock_client_cls = MagicMock(return_value=mock_client_instance)
-    return mock_client_cls
-
-
 class TestNegotiateModel(unittest.TestCase):
     """Model auto-negotiation on construction."""
 
-    def test_auto_negotiate_single_model(self):
+    @patch("davinci.llm.client.Client")
+    def test_auto_negotiate_single_model(self, MockClient):
         model = _make_model("llama-3-8b-instruct", "LLaMA 3 8B Instruct")
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=_make_store())
+        MockClient.return_value.llm.list_loaded.return_value = [model]
+        client = LMStudioClient(store=_make_store())
         self.assertEqual(client.model_name, "LLaMA 3 8B Instruct")
         self.assertEqual(client.model_id, "llama-3-8b-instruct")
 
-    def test_auto_negotiate_no_models_raises(self):
-        mock_cls = _make_client_cls([])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            with self.assertRaises(RuntimeError) as ctx:
-                LMStudioClient(store=_make_store())
+    @patch("davinci.llm.client.Client")
+    def test_auto_negotiate_no_models_raises(self, MockClient):
+        MockClient.return_value.llm.list_loaded.return_value = []
+        with self.assertRaises(RuntimeError) as ctx:
+            LMStudioClient(store=_make_store())
         self.assertIn("No model loaded", str(ctx.exception))
 
-    def test_auto_negotiate_multiple_models_warns(self):
+    @patch("davinci.llm.client.Client")
+    def test_auto_negotiate_multiple_models_warns(self, MockClient):
         model_a = _make_model("llama-a", "LLaMA A")
         model_b = _make_model("llama-b", "LLaMA B")
-        mock_cls = _make_client_cls([model_a, model_b])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            with self.assertWarns(UserWarning):
-                client = LMStudioClient(store=_make_store())
+        MockClient.return_value.llm.list_loaded.return_value = [model_a, model_b]
+        with self.assertWarns(UserWarning):
+            client = LMStudioClient(store=_make_store())
         # First model should be selected
         self.assertEqual(client.model_name, "LLaMA A")
 
@@ -89,35 +69,35 @@ class TestNegotiateModel(unittest.TestCase):
 class TestModelSize(unittest.TestCase):
     """Model size detection via hints."""
 
-    def _client_with_name(self, display_name: str):
+    def _client_with_name(self, MockClient, display_name: str) -> LMStudioClient:
         model = _make_model("test-id", display_name)
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            return LMStudioClient(store=_make_store())
+        MockClient.return_value.llm.list_loaded.return_value = [model]
+        return LMStudioClient(store=_make_store())
 
-    def test_model_size_large(self):
-        client = self._client_with_name("llama-70b-instruct")
+    @patch("davinci.llm.client.Client")
+    def test_model_size_large(self, MockClient):
+        client = self._client_with_name(MockClient, "llama-70b-instruct")
         self.assertEqual(client.model_size, "large")
 
-    def test_model_size_small(self):
-        client = self._client_with_name("llama-9b-chat")
+    @patch("davinci.llm.client.Client")
+    def test_model_size_small(self, MockClient):
+        client = self._client_with_name(MockClient, "llama-9b-chat")
         self.assertEqual(client.model_size, "small")
 
-    def test_model_size_unknown(self):
-        client = self._client_with_name("mystery-model")
+    @patch("davinci.llm.client.Client")
+    def test_model_size_unknown(self, MockClient):
+        client = self._client_with_name(MockClient, "mystery-model")
         self.assertEqual(client.model_size, "unknown")
 
 
 class TestWarnIfWrongSize(unittest.TestCase):
     """warn_if_wrong_size emits when size mismatches."""
 
-    def test_warn_if_wrong_size(self):
+    @patch("davinci.llm.client.Client")
+    def test_warn_if_wrong_size(self, MockClient):
         model = _make_model("llama-70b", "LLaMA 70B")
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=_make_store())
+        MockClient.return_value.llm.list_loaded.return_value = [model]
+        client = LMStudioClient(store=_make_store())
         self.assertEqual(client.model_size, "large")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -128,22 +108,14 @@ class TestWarnIfWrongSize(unittest.TestCase):
 class TestIngest(unittest.TestCase):
     """ingest() streaming and memory storage."""
 
-    def _make_ingest_client(self, chunks: list):
-        model = _make_model("tiny-7b", "Tiny 7B")
-        mock_cls = _make_client_cls([model], chunks)
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            return LMStudioClient(store=_make_store()), mock_cls
-
-    def test_ingest_yields_tokens(self):
+    @patch("davinci.llm.client.Client")
+    def test_ingest_yields_tokens(self, MockClient):
         raw_chunks = [_make_chunk("Hello"), _make_chunk(" world"), _make_chunk("!")]
         model = _make_model("tiny-7b", "Tiny 7B")
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=_make_store())
-        # Set up respond_stream to return our chunks
-        client._client.llm.respond_stream.return_value = iter(raw_chunks)
+        mock_instance = MockClient.return_value
+        mock_instance.llm.list_loaded.return_value = [model]
+        mock_instance.llm.respond_stream.return_value = iter(raw_chunks)
+        client = LMStudioClient(store=_make_store())
         tokens = list(client.ingest("some text"))
         # First 3 tokens, then the sentinel
         self.assertIn("Hello", tokens)
@@ -152,15 +124,15 @@ class TestIngest(unittest.TestCase):
         # Sentinel is the last item
         self.assertTrue(tokens[-1].startswith("\n[memory:"))
 
-    def test_ingest_stores_memory(self):
+    @patch("davinci.llm.client.Client")
+    def test_ingest_stores_memory(self, MockClient):
         raw_chunks = [_make_chunk("Summary text")]
         model = _make_model("tiny-7b", "Tiny 7B")
         store = _make_store()
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=store)
-        client._client.llm.respond_stream.return_value = iter(raw_chunks)
+        mock_instance = MockClient.return_value
+        mock_instance.llm.list_loaded.return_value = [model]
+        mock_instance.llm.respond_stream.return_value = iter(raw_chunks)
+        client = LMStudioClient(store=store)
         tokens = list(client.ingest("input text"))
         # The sentinel contains the memory UUID
         sentinel = tokens[-1]
@@ -175,27 +147,26 @@ class TestIngest(unittest.TestCase):
 class TestReason(unittest.TestCase):
     """reason() streaming and no-memory fallback."""
 
-    def test_reason_yields_tokens(self):
+    @patch("davinci.llm.client.Client")
+    def test_reason_yields_tokens(self, MockClient):
         raw_chunks = [_make_chunk("Token1"), _make_chunk(" Token2")]
         store = _make_store()
         store.store("The Mandelbrot set is beautiful.")
         model = _make_model("llama-70b", "LLaMA 70B")
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=store)
-        client._client.llm.respond_stream.return_value = iter(raw_chunks)
+        mock_instance = MockClient.return_value
+        mock_instance.llm.list_loaded.return_value = [model]
+        mock_instance.llm.respond_stream.return_value = iter(raw_chunks)
+        client = LMStudioClient(store=store)
         tokens = list(client.reason("Mandelbrot"))
         self.assertIn("Token1", tokens)
         self.assertIn(" Token2", tokens)
 
-    def test_reason_no_memories(self):
+    @patch("davinci.llm.client.Client")
+    def test_reason_no_memories(self, MockClient):
         store = _make_store()  # empty store
         model = _make_model("llama-70b", "LLaMA 70B")
-        mock_cls = _make_client_cls([model])
-        with patch("davinci.llm.client.Client", mock_cls):
-            from davinci.llm.client import LMStudioClient
-            client = LMStudioClient(store=store)
+        MockClient.return_value.llm.list_loaded.return_value = [model]
+        client = LMStudioClient(store=store)
         tokens = list(client.reason("anything"))
         self.assertEqual(tokens, ["(No relevant memories found.)"])
 
