@@ -8,7 +8,7 @@ Run with:
 import time
 import unittest
 
-from davinci.memory.store import MemoryStore, _MIN_RECENCY_SPREAD
+from davinci.memory.store import MemoryStore, _MAX_RECENCY_AGE_SECONDS
 
 
 def _make_store() -> MemoryStore:
@@ -49,12 +49,12 @@ class TestStoreAndRetrieve(unittest.TestCase):
             self.assertEqual(node2.frequency, freq_after_first + 1)
 
     def test_retrieve_updates_recency(self):
+        """After retrieve, node recency equals maximum freshness (just accessed)."""
         with _make_store() as store:
-            before = time.time()
             mid = store.store("timestamp test")
             time.sleep(0.01)
             node = store.retrieve(mid)
-            self.assertGreaterEqual(node.recency, before)
+            self.assertEqual(node.recency, _MAX_RECENCY_AGE_SECONDS)
 
     def test_retrieve_updates_classification_in_db(self):
         """After retrieve, the classification in the DB is updated."""
@@ -321,22 +321,19 @@ class TestGetRanges(unittest.TestCase):
     """_get_ranges() private helper."""
 
     def test_empty_db_returns_default_ranges(self):
-        now = time.time()
         with _make_store() as store:
-            freq_range, rec_range = store._get_ranges(now=now)
+            freq_range, rec_range = store._get_ranges()
         self.assertEqual(freq_range, (0.0, 0.0))
-        self.assertAlmostEqual(rec_range[1] - rec_range[0], 1.0, places=6)
-        self.assertEqual(rec_range[1], now)
+        self.assertEqual(rec_range, (0.0, _MAX_RECENCY_AGE_SECONDS))
 
     def test_empty_db_returns_synthetic_recency_range(self):
-        before = time.time()
         with _make_store() as store:
-            freq_range, rec_range = store._get_ranges(now=before)
+            freq_range, rec_range = store._get_ranges()
         self.assertEqual(freq_range, (0.0, 0.0))
-        self.assertAlmostEqual(rec_range[1] - rec_range[0], 1.0, places=6)
-        self.assertEqual(rec_range[1], before)
+        self.assertEqual(rec_range, (0.0, _MAX_RECENCY_AGE_SECONDS))
 
-    def test_same_timestamp_nodes_get_synthetic_range(self):
+    def test_same_timestamp_nodes_get_fixed_recency_range(self):
+        """_get_ranges always returns the fixed age-based recency range."""
         with _make_store() as store:
             now = time.time()
             store.store("a")
@@ -344,11 +341,8 @@ class TestGetRanges(unittest.TestCase):
             # force identical recency by direct update
             store._conn.execute("UPDATE memories SET recency = ?", (now,))
             store._conn.commit()
-            # verify the DB state matches test intent
-            rows = store._conn.execute("SELECT recency FROM memories").fetchall()
-            self.assertTrue(all(r[0] == now for r in rows))
-            _, rec_range = store._get_ranges(now=now)
-            self.assertAlmostEqual(rec_range[1] - rec_range[0], _MIN_RECENCY_SPREAD, places=6)
+            _, rec_range = store._get_ranges()
+            self.assertEqual(rec_range, (0.0, _MAX_RECENCY_AGE_SECONDS))
 
     def test_ranges_reflect_stored_data(self):
         with _make_store() as store:
@@ -436,6 +430,58 @@ class TestDecayCycleHysteresis(unittest.TestCase):
                 "SELECT classification FROM memories WHERE id = ?", (mid,)
             ).fetchone()
             self.assertEqual(row[0], "boundary")
+
+
+class TestAgeBased(unittest.TestCase):
+    """Age-based recency design: freshness drives classification."""
+
+    def test_new_memory_is_core(self):
+        """A brand-new memory has maximum freshness and must be classified core."""
+        with _make_store() as store:
+            mid = store.store("fresh memory")
+            row = store._conn.execute(
+                "SELECT classification FROM memories WHERE id = ?", (mid,)
+            ).fetchone()
+            self.assertEqual(row[0], "core")
+
+    def test_old_memory_becomes_forget_after_decay(self):
+        """A memory last accessed more than 30 days ago must decay to forget."""
+        with _make_store() as store:
+            mid_old = store.store("ancient memory")
+            mid_new = store.store("active memory")
+            # A third entry sets the frequency ceiling so mid_new maps to the
+            # imaginary midpoint (imag=0) and stays 'core', while mid_old at
+            # freq=0 (imag=-1) and freshness=0 (real=-2) maps to c=-2-j and
+            # escapes the Mandelbrot set immediately → 'forget'.
+            mid_extra = store.store("extra memory")
+            old_timestamp = time.time() - (31 * 24 * 60 * 60)
+            store._conn.execute(
+                "UPDATE memories SET recency=?, frequency=0 WHERE id=?",
+                (old_timestamp, mid_old),
+            )
+            store._conn.execute("UPDATE memories SET frequency=10 WHERE id=?", (mid_new,))
+            store._conn.execute("UPDATE memories SET frequency=20 WHERE id=?", (mid_extra,))
+            store._conn.commit()
+            store.decay_cycle()
+            row = store._conn.execute(
+                "SELECT classification FROM memories WHERE id = ?", (mid_old,)
+            ).fetchone()
+            self.assertEqual(row[0], "forget")
+
+    def test_search_returns_recomputed_classification(self):
+        """search() recomputes classification — stale DB value is not returned."""
+        with _make_store() as store:
+            mid = store.store("recompute test memory")
+            # Manually set DB classification to a stale value
+            store._conn.execute(
+                "UPDATE memories SET classification = 'forget' WHERE id = ?", (mid,)
+            )
+            store._conn.commit()
+            # search() must recompute; a brand-new memory should not be forget
+            results = store.search("recompute test")
+            self.assertEqual(len(results), 1)
+            self.assertNotEqual(results[0].classification, "forget")
+
 
 if __name__ == "__main__":
     unittest.main()
