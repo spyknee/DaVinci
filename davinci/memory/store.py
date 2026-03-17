@@ -369,7 +369,7 @@ class MemoryStore:
             # No non-forget nodes — nothing meaningful to reclassify.
             return {}
 
-        freq_range: tuple[float, float] = (float(range_row[0]), float(range_row[1]))
+        freq_range: tuple[float, float] = (0.0, _MAX_FREQUENCY)
         recency_range: tuple[float, float] = (0.0, _MAX_RECENCY_AGE_SECONDS)
 
         changed: dict[str, list[str]] = {}
@@ -499,7 +499,7 @@ class MemoryStore:
             population-relative frequency comparisons.
             ``recency_range`` is always ``(0.0, _MAX_RECENCY_AGE_SECONDS)``.
         """
-        return (0.0, 0.0), (0.0, _MAX_RECENCY_AGE_SECONDS)
+        return (0.0, _MAX_FREQUENCY), (0.0, _MAX_RECENCY_AGE_SECONDS)
 
     def _row_to_node(self, row: sqlite3.Row, freq_range: tuple, recency_range: tuple) -> MemoryNode:
         """Convert a SQLite row to a :class:`MemoryNode`.
