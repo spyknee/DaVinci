@@ -192,6 +192,19 @@ def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_chat(dv: DaVinci, args: argparse.Namespace) -> None:
+    from davinci.llm import LMStudioClient
+
+    try:
+        with LMStudioClient(store=dv._store) as client:
+            for chunk in client.chat(args.message, context_limit=args.limit):
+                print(chunk, end="", flush=True)
+        print()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_maintain(dv: DaVinci, args: argparse.Namespace) -> None:
     from davinci.memory import MemoryMaintenance
 
@@ -334,6 +347,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum number of memories to include as context (default: 5).",
     )
 
+    # chat
+    p_chat = sub.add_parser(
+        "chat",
+        help="Persistent conversation turn: retrieves memories, queries LLM, stores exchange.",
+    )
+    p_chat.add_argument("message", help="Your message.")
+    p_chat.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Maximum number of memories to inject as context (default: 5).",
+    )
+
     # maintain
     p_maintain = sub.add_parser(
         "maintain",
@@ -371,6 +398,7 @@ _COMMANDS = {
     "memories": cmd_memories,
     "ingest": cmd_ingest,
     "ask": cmd_ask,
+    "chat": cmd_chat,
     "maintain": cmd_maintain,
 }
 

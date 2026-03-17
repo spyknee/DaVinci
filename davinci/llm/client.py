@@ -194,7 +194,7 @@ class LMStudioClient:
             return
 
         context_block = "\n".join(
-            node.zoom_levels.get(1, node.content) for node in nodes
+            node.zoom_levels.get(3, node.content) for node in nodes
         )
 
         messages = [
@@ -216,6 +216,98 @@ class LMStudioClient:
             self.model_id, messages=messages
         ):
             yield chunk.content
+
+    # ------------------------------------------------------------------
+    # Pipeline — chat (full persistent conversation turn)
+    # ------------------------------------------------------------------
+
+    def chat(
+        self,
+        user_message: str,
+        context_limit: int = 5,
+    ) -> Generator[str, None, None]:
+        """Full persistent conversation pipeline.
+
+        Steps:
+        1. Retrieve relevant memories for the user message.
+        2. Build context block from full memory content (zoom_level_3).
+        3. Send to LLM with a continuity-focused system prompt.
+        4. Stream response tokens to caller.
+        5. After stream ends, summarise and store the exchange as a memory
+           via the same LLM summarisation used by :meth:`ingest`.
+
+        Parameters
+        ----------
+        user_message:
+            The user's input for this turn.
+        context_limit:
+            Maximum number of memories to inject as context (default 5).
+
+        Yields
+        ------
+        str
+            Token chunks from the LLM, followed by ``"\\n[memory:<uuid>]"``
+            sentinel once the exchange is stored.
+        """
+        # Step 1 & 2: retrieve memories and build context
+        nodes = self._store.search(user_message, limit=context_limit)
+        if nodes:
+            context_block = "\n".join(
+                node.zoom_levels.get(3, node.content) for node in nodes
+            )
+            memory_context = f"Memories from previous sessions:\n{context_block}\n\n"
+        else:
+            memory_context = ""
+
+        # Step 3 & 4: stream LLM response
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are DaVinci, a persistent AI assistant. "
+                    "You have access to memories from previous sessions. "
+                    "Use them to maintain continuity across sessions. "
+                    "Be concise and direct."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"{memory_context}{user_message}",
+            },
+        ]
+
+        accumulated: list[str] = []
+        for chunk in self._client.llm.respond_stream(
+            self.model_id, messages=messages
+        ):
+            token = chunk.content
+            accumulated.append(token)
+            yield token
+
+        # Step 5: summarise the full exchange and store as a memory
+        assistant_response = "".join(accumulated)
+        exchange = f"User: {user_message}\nAssistant: {assistant_response}"
+
+        summarise_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a memory assistant. Summarise the following conversation "
+                    "exchange into a concise memory entry. Be factual and brief."
+                ),
+            },
+            {"role": "user", "content": exchange},
+        ]
+
+        summary_parts: list[str] = []
+        for chunk in self._client.llm.respond_stream(
+            self.model_id, messages=summarise_messages
+        ):
+            summary_parts.append(chunk.content)
+
+        summary = "".join(summary_parts)
+        memory_id = self._store.store(summary)
+        yield f"\n[memory:{memory_id}]"
 
     # ------------------------------------------------------------------
     # Context manager

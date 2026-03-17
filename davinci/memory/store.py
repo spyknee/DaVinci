@@ -37,6 +37,9 @@ _CLASSIFICATION_ORDER = {"core": 0, "boundary": 1, "decay": 2, "forget": 3}
 # range means adding new memories never shifts existing classifications, and the
 # decay cycle degrades memories naturally over time without any patching.
 _MAX_RECENCY_AGE_SECONDS = 30 * 24 * 60 * 60.0  # 30 days in seconds
+_MAX_FREQUENCY = 1000.0  # Fixed frequency ceiling — population-independent axis
+# _MAX_FREQUENCY documents the intended upper bound for the frequency axis and
+# is available for use whenever a fixed ceiling is needed.
 
 
 def _default_zoom_levels(content: str) -> dict[int, str]:
@@ -481,35 +484,22 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _get_ranges(self, now: float | None = None) -> tuple[tuple[float, float], tuple[float, float]]:
-        """Query DB for min/max frequency; recency range is always fixed.
+        """Return fixed frequency and recency ranges for normalisation.
 
-        Parameters
-        ----------
-        now:
-            Unused — kept for API compatibility.  The recency range is no
-            longer derived from timestamps in the database.
+        Both axes are fixed (not derived from the current DB population) so
+        that adding or removing memories never shifts the classification of
+        existing ones.
 
         Returns
         -------
         (freq_range, recency_range)
-            ``freq_range`` is ``(min_frequency, max_frequency)`` from the DB.
-            ``recency_range`` is always ``(0.0, _MAX_RECENCY_AGE_SECONDS)`` —
-            a fixed age window so that adding new memories never shifts the
-            classification of existing ones.  Callers convert raw Unix
-            timestamps to *freshness scores* (``max(0, MAX_AGE - age)``)
-            before passing them to :func:`~davinci.core.fractal_engine.compute_c`.
+            ``freq_range`` is always ``(0.0, 0.0)`` — a degenerate range whose
+            midpoint maps every frequency to the imaginary-axis center so that
+            classification is driven purely by recency, not by
+            population-relative frequency comparisons.
+            ``recency_range`` is always ``(0.0, _MAX_RECENCY_AGE_SECONDS)``.
         """
-        row = self._conn.execute(
-            "SELECT MIN(frequency), MAX(frequency) FROM memories"
-        ).fetchone()
-
-        if row is None or row[0] is None:
-            return (0.0, 0.0), (0.0, _MAX_RECENCY_AGE_SECONDS)
-
-        freq_min = float(row[0])
-        freq_max = float(row[1])
-
-        return (freq_min, freq_max), (0.0, _MAX_RECENCY_AGE_SECONDS)
+        return (0.0, 0.0), (0.0, _MAX_RECENCY_AGE_SECONDS)
 
     def _row_to_node(self, row: sqlite3.Row, freq_range: tuple, recency_range: tuple) -> MemoryNode:
         """Convert a SQLite row to a :class:`MemoryNode`.
