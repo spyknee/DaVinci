@@ -47,7 +47,7 @@ class DaVinci(BaseInterface):
     >>> mid = dv.remember("Hello, DaVinci!")
     >>> node = dv.recall(mid)
     >>> print(node.classification)
-    forget
+    core
     >>> dv.close()
     """
 

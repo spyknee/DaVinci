@@ -31,12 +31,12 @@ __all__ = ["MemoryStore"]
 # Used for search/sort ordering and for decay-cycle hysteresis decisions.
 _CLASSIFICATION_ORDER = {"core": 0, "boundary": 1, "decay": 2, "forget": 3}
 
-# Minimum recency spread used when normalising timestamps.  When all stored
-# memories fall within a window smaller than this value the oldest boundary is
-# pushed back so that the entire session maps near the +0.25 end of the real
-# axis (inside the Mandelbrot set → "core") rather than being spread across the
-# full −2.0 to +0.25 range based on millisecond differences.
-_MIN_RECENCY_SPREAD = 24 * 60 * 60.0  # 24 hours in seconds
+# Maximum age (in seconds) used as the fixed recency normalisation range.
+# A memory last accessed more than this long ago maps to the ``forget`` end of
+# the real axis; one accessed just now maps to the ``core`` end.  Using a fixed
+# range means adding new memories never shifts existing classifications, and the
+# decay cycle degrades memories naturally over time without any patching.
+_MAX_RECENCY_AGE_SECONDS = 30 * 24 * 60 * 60.0  # 30 days in seconds
 
 
 def _default_zoom_levels(content: str) -> dict[int, str]:
@@ -154,10 +154,11 @@ class MemoryStore:
 
         zl = zoom_levels or _default_zoom_levels(content)
 
+        # Brand-new memory = maximum freshness so it maps to 'core'.
         node = MemoryNode(
             content=content,
             frequency=0,
-            recency=now,
+            recency=_MAX_RECENCY_AGE_SECONDS,
             freq_range=freq_range,
             recency_range=recency_range,
             max_iter=self._max_iter,
@@ -180,7 +181,7 @@ class MemoryStore:
                     memory_id,
                     node.content,
                     node.frequency,
-                    node.recency,
+                    now,              # raw Unix timestamp for age tracking
                     node.created_at,
                     node.classification,
                     node.c_value.real,
@@ -223,7 +224,10 @@ class MemoryStore:
 
         # Record access
         node.frequency += 1
-        node.recency = time.time()
+        # Just accessed = maximum freshness.  We track the raw timestamp
+        # separately for the DB update so age can be computed later.
+        node.recency = _MAX_RECENCY_AGE_SECONDS
+        raw_now = time.time()
 
         # Recompute classification with current global ranges
         node._freq_range = freq_range
@@ -244,7 +248,7 @@ class MemoryStore:
                 """,
                 (
                     node.frequency,
-                    node.recency,
+                    raw_now,          # raw Unix timestamp for age tracking
                     node.classification,
                     node.c_value.real,
                     node.c_value.imag,
@@ -305,6 +309,7 @@ class MemoryStore:
             else:
                 continue
             node = self._row_to_node(row, freq_range, recency_range)
+            node._recompute()
             scored.append((score, node))
 
         scored.sort(key=lambda item: (-item[0], _CLASSIFICATION_ORDER.get(item[1].classification, 99), -item[1].frequency))
@@ -325,7 +330,12 @@ class MemoryStore:
             "SELECT * FROM memories WHERE classification = ?", (classification,)
         ).fetchall()
         freq_range, recency_range = self._get_ranges()
-        return [self._row_to_node(row, freq_range, recency_range) for row in rows]
+        nodes = []
+        for row in rows:
+            node = self._row_to_node(row, freq_range, recency_range)
+            node._recompute()
+            nodes.append(node)
+        return nodes
 
     def decay_cycle(self) -> dict[str, list[str]]:
         """Reclassify every memory using current global frequency/recency ranges.
@@ -346,9 +356,9 @@ class MemoryStore:
         """
         rows = self._conn.execute("SELECT * FROM memories").fetchall()
 
-        # Compute ranges excluding current forget nodes to avoid skew
+        # Compute frequency range excluding current forget nodes to avoid skew
         range_row = self._conn.execute(
-            """SELECT MIN(frequency), MAX(frequency), MIN(recency), MAX(recency)
+            """SELECT MIN(frequency), MAX(frequency)
                FROM memories WHERE classification != 'forget'"""
         ).fetchone()
 
@@ -357,19 +367,17 @@ class MemoryStore:
             return {}
 
         freq_range: tuple[float, float] = (float(range_row[0]), float(range_row[1]))
-        rec_min = float(range_row[2])
-        rec_max = float(range_row[3])
-        if rec_max - rec_min < _MIN_RECENCY_SPREAD:
-            rec_min = rec_max - _MIN_RECENCY_SPREAD
-        recency_range: tuple[float, float] = (rec_min, rec_max)
+        recency_range: tuple[float, float] = (0.0, _MAX_RECENCY_AGE_SECONDS)
 
         changed: dict[str, list[str]] = {}
+        now = time.time()
 
         for row in rows:
             old_classification = row["classification"]
+            freshness = max(0.0, _MAX_RECENCY_AGE_SECONDS - (now - row["recency"]))
             c = compute_c(
                 row["frequency"],
-                row["recency"],
+                freshness,
                 freq_range,
                 recency_range,
             )
@@ -473,47 +481,35 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _get_ranges(self, now: float | None = None) -> tuple[tuple[float, float], tuple[float, float]]:
-        """Query DB for min/max frequency and recency.
+        """Query DB for min/max frequency; recency range is always fixed.
 
         Parameters
         ----------
         now:
-            Reference timestamp used to build a synthetic recency range when
-            the table is empty.  Defaults to ``time.time()`` when omitted.
+            Unused — kept for API compatibility.  The recency range is no
+            longer derived from timestamps in the database.
 
         Returns
         -------
         (freq_range, recency_range)
-            Both as ``(min, max)`` tuples.  When the table is empty a
-            synthetic recency range of ``(now - 1, now)`` is returned so that
-            the first stored node maps to the midpoint rather than the
-            degenerate ``(0, 0)`` range.  When the spread between ``rec_min``
-            and ``rec_max`` is smaller than :data:`_MIN_RECENCY_SPREAD`
-            (rapid-fire inserts) ``rec_min`` is pushed back to
-            ``rec_max - _MIN_RECENCY_SPREAD`` so that all memories in the same
-            session map toward the ``+0.25`` end of the real axis (inside the
-            Mandelbrot set → ``core``) rather than spreading across the full
-            ``-2.0`` to ``+0.25`` range based on millisecond differences.
+            ``freq_range`` is ``(min_frequency, max_frequency)`` from the DB.
+            ``recency_range`` is always ``(0.0, _MAX_RECENCY_AGE_SECONDS)`` —
+            a fixed age window so that adding new memories never shifts the
+            classification of existing ones.  Callers convert raw Unix
+            timestamps to *freshness scores* (``max(0, MAX_AGE - age)``)
+            before passing them to :func:`~davinci.core.fractal_engine.compute_c`.
         """
-        if now is None:
-            now = time.time()
-
         row = self._conn.execute(
-            "SELECT MIN(frequency), MAX(frequency), MIN(recency), MAX(recency) FROM memories"
+            "SELECT MIN(frequency), MAX(frequency) FROM memories"
         ).fetchone()
 
         if row is None or row[0] is None:
-            return (0.0, 0.0), (now - 1.0, now)
+            return (0.0, 0.0), (0.0, _MAX_RECENCY_AGE_SECONDS)
 
         freq_min = float(row[0])
         freq_max = float(row[1])
-        rec_min = float(row[2])
-        rec_max = float(row[3])
 
-        if rec_max - rec_min < _MIN_RECENCY_SPREAD:
-            rec_min = rec_max - _MIN_RECENCY_SPREAD
-
-        return (freq_min, freq_max), (rec_min, rec_max)
+        return (freq_min, freq_max), (0.0, _MAX_RECENCY_AGE_SECONDS)
 
     def _row_to_node(self, row: sqlite3.Row, freq_range: tuple, recency_range: tuple) -> MemoryNode:
         """Convert a SQLite row to a :class:`MemoryNode`.
@@ -522,12 +518,20 @@ class MemoryStore:
         ----------
         row:           A ``sqlite3.Row`` object from the ``memories`` table.
         freq_range:    ``(min, max)`` frequency range from :meth:`_get_ranges`.
-        recency_range: ``(min, max)`` recency range from :meth:`_get_ranges`.
+        recency_range: ``(min, max)`` recency range from :meth:`_get_ranges`
+                       (always ``(0, _MAX_RECENCY_AGE_SECONDS)``).
 
         Returns
         -------
         MemoryNode
+            The node's ``recency`` attribute is set to the *freshness score*
+            (``max(0, MAX_AGE - age)``) so that :meth:`~MemoryNode._recompute`
+            maps it correctly onto the complex plane.  The raw Unix timestamp
+            remains stored in the database ``recency`` column.
         """
+        now = time.time()
+        freshness = max(0.0, _MAX_RECENCY_AGE_SECONDS - (now - row["recency"]))
+
         zoom_levels = {
             1: row["zoom_level_1"],
             2: row["zoom_level_2"],
@@ -537,7 +541,7 @@ class MemoryStore:
         node = MemoryNode(
             content=row["content"],
             frequency=row["frequency"],
-            recency=row["recency"],
+            recency=freshness,
             freq_range=freq_range,
             recency_range=recency_range,
             max_iter=self._max_iter,
@@ -564,7 +568,11 @@ class MemoryStore:
         """
         rows = self._conn.execute("SELECT * FROM memories").fetchall()
         freq_range, recency_range = self._get_ranges()
-        nodes = [self._row_to_node(row, freq_range, recency_range) for row in rows]
+        nodes = []
+        for row in rows:
+            node = self._row_to_node(row, freq_range, recency_range)
+            node._recompute()
+            nodes.append(node)
         nodes.sort(
             key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency)
         )
