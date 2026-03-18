@@ -4,7 +4,6 @@ DaVinci LLM — LM Studio client
 
 from __future__ import annotations
 
-import re
 import warnings
 from typing import Generator
 
@@ -19,10 +18,6 @@ from davinci.llm.config import (
 from davinci.memory.store import MemoryStore
 
 __all__ = ["LMStudioClient"]
-
-
-def _strip_think(text: str) -> str:
-    return re.sub(r"((<think>|Thinking Process:).*?</think>)", "", text, flags=re.DOTALL).strip()
 
 
 class LMStudioClient:
@@ -103,9 +98,9 @@ class LMStudioClient:
         accumulated: list[str] = []
         for chunk in self._client.llm.model(self.model_id).respond_stream(chat):
             accumulated.append(chunk.content)
+            yield chunk.content
 
-        full_response = _strip_think("".join(accumulated))
-        yield full_response
+        full_response = "".join(accumulated)
         memory_id = self._store.store(full_response)
         yield f"\n[memory:{memory_id}]"
 
@@ -152,10 +147,9 @@ class LMStudioClient:
         accumulated: list[str] = []
         for chunk in self._client.llm.model(self.model_id).respond_stream(chat):
             accumulated.append(chunk.content)
+            yield chunk.content
 
-        assistant_response = _strip_think("".join(accumulated))
-        yield assistant_response
-
+        assistant_response = "".join(accumulated)
         exchange = f"User: {user_message}\nAssistant: {assistant_response}"
 
         summary_chat = self._build_chat(
@@ -166,7 +160,7 @@ class LMStudioClient:
         for chunk in self._client.llm.model(self.model_id).respond_stream(summary_chat):
             summary_parts.append(chunk.content)
 
-        summary = _strip_think("".join(summary_parts))
+        summary = "".join(summary_parts)
         memory_id = self._store.store(summary)
         yield f"\n[memory:{memory_id}]"
 
