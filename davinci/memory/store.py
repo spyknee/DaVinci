@@ -97,7 +97,7 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _create_schema(self) -> None:
-        """Create the ``memories`` table and indexes if they don't exist."""
+        """Create the ``memories`` table, FTS5 virtual table, indexes, and triggers."""
         with self._conn:
             self._conn.execute(
                 """
@@ -127,6 +127,34 @@ class MemoryStore:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_recency ON memories (recency)"
             )
+            # FTS5 virtual table for full-text search.  Wrapped in try/except so
+            # that builds of SQLite without FTS5 support degrade gracefully.
+            try:
+                self._conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+                    USING fts5(id UNINDEXED, content)
+                    """
+                )
+                self._conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS memories_ai
+                    AFTER INSERT ON memories BEGIN
+                        INSERT INTO memories_fts(id, content)
+                        VALUES (new.id, new.content);
+                    END
+                    """
+                )
+                self._conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS memories_ad
+                    AFTER DELETE ON memories BEGIN
+                        DELETE FROM memories_fts WHERE id = old.id;
+                    END
+                    """
+                )
+            except sqlite3.OperationalError:
+                pass  # FTS5 not available on this SQLite build
 
     # ------------------------------------------------------------------
     # Public API
@@ -288,15 +316,42 @@ class MemoryStore:
         if not words:
             return []
 
-        # Pre-filter in SQLite: rows must contain at least one word.
-        # Cap at 15 words to prevent excessive OR clause construction.
+        # Cap at 15 words to prevent excessive clause construction.
         words = words[:15]
-        where_clauses = " OR ".join(["content LIKE ? COLLATE NOCASE"] * len(words))
-        params = [f"%{w}%" for w in words]
-        rows = self._conn.execute(
-            f"SELECT * FROM memories WHERE {where_clauses}",
-            params,
-        ).fetchall()
+
+        # Pre-filter via FTS5 when available; fall back to LIKE otherwise.
+        # FTS5 prefix-OR query (e.g. "quick* OR brown*") replicates the
+        # LIKE '%word%' OR semantics so that the Python scoring pass below
+        # receives the same candidate set as before.
+        rows = None
+        try:
+            fts_terms = " OR ".join(f"{w}*" for w in words)
+            fts_ids = [
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT id FROM memories_fts WHERE memories_fts MATCH ?",
+                    (fts_terms,),
+                ).fetchall()
+            ]
+            if fts_ids:
+                placeholders = ",".join("?" * len(fts_ids))
+                rows = self._conn.execute(
+                    f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                    fts_ids,
+                ).fetchall()
+            else:
+                rows = []
+        except sqlite3.OperationalError:
+            rows = None
+
+        if rows is None:
+            # FTS5 unavailable or query error — fall back to LIKE pre-filter.
+            where_clauses = " OR ".join(["content LIKE ? COLLATE NOCASE"] * len(words))
+            params = [f"%{w}%" for w in words]
+            rows = self._conn.execute(
+                f"SELECT * FROM memories WHERE {where_clauses}",
+                params,
+            ).fetchall()
 
         freq_range, recency_range = self._get_ranges()
 
@@ -317,6 +372,66 @@ class MemoryStore:
 
         scored.sort(key=lambda item: (-item[0], _CLASSIFICATION_ORDER.get(item[1].classification, 99), -item[1].frequency))
         return [node for _, node in scored[:limit]]
+
+    def search_fts(self, query: str, limit: int = 10) -> list[MemoryNode]:
+        """Full-text search using SQLite FTS5, falling back to LIKE on error.
+
+        Unlike :meth:`search`, this method does not apply score-based ranking;
+        results are ordered by classification priority (core → forget) then by
+        frequency descending.
+
+        Parameters
+        ----------
+        query: FTS5 query string (single word, phrase, or FTS5 expression).
+        limit: Maximum number of results to return.
+
+        Returns
+        -------
+        list[MemoryNode]
+        """
+        if not query.strip():
+            return []
+
+        rows = None
+        try:
+            fts_ids = [
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT id FROM memories_fts WHERE memories_fts MATCH ?",
+                    (query,),
+                ).fetchall()
+            ]
+            if not fts_ids:
+                return []
+            placeholders = ",".join("?" * len(fts_ids))
+            rows = self._conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                fts_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = None
+
+        if rows is None:
+            # FTS5 unavailable or invalid query — fall back to LIKE.
+            words = query.lower().split()[:15]
+            if not words:
+                return []
+            where_clauses = " OR ".join(["content LIKE ? COLLATE NOCASE"] * len(words))
+            params = [f"%{w}%" for w in words]
+            rows = self._conn.execute(
+                f"SELECT * FROM memories WHERE {where_clauses}",
+                params,
+            ).fetchall()
+
+        freq_range, recency_range = self._get_ranges()
+        nodes = []
+        for row in rows:
+            node = self._row_to_node(row, freq_range, recency_range)
+            node._recompute()
+            nodes.append(node)
+
+        nodes.sort(key=lambda n: (_CLASSIFICATION_ORDER.get(n.classification, 99), -n.frequency))
+        return nodes[:limit]
 
     def get_by_classification(self, classification: str) -> list[MemoryNode]:
         """Return all memories with the given classification.
@@ -482,6 +597,29 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _backfill_fts(self) -> None:
+        """Insert any ``memories`` rows that are missing from the FTS5 index.
+
+        Call this once after opening a database that was created before FTS5
+        support was added, or after manually removing rows from the FTS5
+        shadow table.  Normal writes through :meth:`store` and deletes through
+        :meth:`prune` are kept in sync automatically via SQL triggers, so this
+        method is only needed for one-time migration.
+
+        Silently does nothing if FTS5 is not available on this SQLite build.
+        """
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO memories_fts(id, content)
+                    SELECT id, content FROM memories
+                    WHERE id NOT IN (SELECT id FROM memories_fts)
+                    """
+                )
+        except sqlite3.OperationalError:
+            pass  # FTS5 not available
 
     def _get_ranges(self, now: float | None = None) -> tuple[tuple[float, float], tuple[float, float]]:
         """Return fixed frequency and recency ranges for normalisation.

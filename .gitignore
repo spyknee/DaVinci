@@ -18,3 +18,12 @@ htmlcov/
 .venv/
 venv/
 env/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS junk
+Thumbs.db
+.DS_Store
