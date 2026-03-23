@@ -27,3 +27,4 @@ env/
 # OS junk
 Thumbs.db
 .DS_Store
+davinci_memory.db
