@@ -1,11 +1,12 @@
 @echo off
-call F:\ai-agent\.venv\Scripts\activate
+cd /d F:\DaVinci
+call %~dp0..\ai-agent\.venv\Scripts\activate
 
 :loop
 echo.
 set /p MSG="You: "
 if /i "%MSG%"=="exit" goto end
-python -m davinci chat "%MSG%"
+python __main__.py chat "%MSG%"
 goto loop
 
 :end

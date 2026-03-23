@@ -14,12 +14,14 @@ stats     Show memory statistics
 memories  List all (or filtered) memories
 ingest    Summarise text via LM Studio and store as a memory
 ask       Reason over stored memories via LM Studio
+chat      Persistent conversation turn: retrieves & injects recent memories, queries LLM, stores exchange
 maintain  Run the background memory maintenance loop
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from typing import Any
@@ -170,7 +172,7 @@ def cmd_ingest(dv: DaVinci, args: argparse.Namespace) -> None:
         sys.exit(1)
 
     try:
-        with LMStudioClient(store=dv._store) as client:
+        with LMStudioClient(store=dv._store, user_id=args.user_id) as client:
             for chunk in client.ingest(text):
                 print(chunk, end="", flush=True)
         print()
@@ -183,7 +185,7 @@ def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
     from davinci.llm import LMStudioClient
 
     try:
-        with LMStudioClient(store=dv._store) as client:
+        with LMStudioClient(store=dv._store, user_id=args.user_id) as client:
             for chunk in client.reason(args.query, limit=args.limit):
                 print(chunk, end="", flush=True)
         print()
@@ -195,9 +197,23 @@ def cmd_ask(dv: DaVinci, args: argparse.Namespace) -> None:
 def cmd_chat(dv: DaVinci, args: argparse.Namespace) -> None:
     from davinci.llm import LMStudioClient
 
+    # Inject the most recent memory to answer "What was my last question?"
     try:
-        with LMStudioClient(store=dv._store) as client:
-            for chunk in client.chat(args.message, context_limit=args.limit):
+        core_memories = dv._store.get_by_classification("core")
+        if core_memories:
+            # Sort by created_at descending (most recent first)
+            most_recent = max(core_memories, key=lambda n: getattr(n, "created_at", 0))
+            recent_context = f"\n\nMost recent memory: {most_recent.content}"
+        else:
+            recent_context = ""
+    except Exception:
+        recent_context = ""
+
+    try:
+        with LMStudioClient(store=dv._store, user_id=args.user_id) as client:
+            # Prepend recent context to prompt
+            full_message = f"{recent_context}\n\n{args.message}" if recent_context else args.message
+            for chunk in client.chat(full_message, context_limit=args.limit):
                 print(chunk, end="", flush=True)
         print()
     except RuntimeError as exc:
@@ -255,6 +271,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # Global user ID argument
+    def add_user_id_arg(p):
+        p.add_argument(
+            "--user-id",
+            default="default",
+            metavar="ID",
+            help="User identifier for per-user memory isolation (default: 'default')."
+        )
 
     # remember
     p_remember = sub.add_parser("remember", help="Store a new memory.")
@@ -320,18 +345,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "ingest",
         help="Summarise text via LM Studio and store as a memory.",
     )
-    p_ingest.add_argument(
-        "content",
-        nargs="?",
-        default=None,
-        help="Text content to ingest.",
-    )
-    p_ingest.add_argument(
-        "--file",
-        default=None,
-        metavar="PATH",
-        help="Read content from a file instead of a positional argument.",
-    )
+    p_ingest.add_argument("content", nargs="?", default=None, help="Text content to ingest.")
+    p_ingest.add_argument("--file", default=None, metavar="PATH", help="Read content from a file instead of a positional argument.")
+    add_user_id_arg(p_ingest)
 
     # ask
     p_ask = sub.add_parser(
@@ -339,45 +355,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reason over stored memories via LM Studio.",
     )
     p_ask.add_argument("query", help="Query string.")
-    p_ask.add_argument(
-        "--limit",
-        type=int,
-        default=5,
-        metavar="N",
-        help="Maximum number of memories to include as context (default: 5).",
-    )
+    p_ask.add_argument("--limit", type=int, default=5, metavar="N", help="Maximum number of memories to include as context (default: 5).")
+    add_user_id_arg(p_ask)
 
     # chat
     p_chat = sub.add_parser(
         "chat",
-        help="Persistent conversation turn: retrieves memories, queries LLM, stores exchange.",
+        help="Persistent conversation turn with recent-memory injection.",
     )
     p_chat.add_argument("message", help="Your message.")
-    p_chat.add_argument(
-        "--limit",
-        type=int,
-        default=5,
-        metavar="N",
-        help="Maximum number of memories to inject as context (default: 5).",
-    )
+    p_chat.add_argument("--limit", type=int, default=5, metavar="N", help="Maximum number of memories to inject as context (default: 5).")
+    add_user_id_arg(p_chat)
 
     # maintain
     p_maintain = sub.add_parser(
         "maintain",
         help="Run the background memory maintenance loop.",
     )
-    p_maintain.add_argument(
-        "--interval",
-        type=float,
-        default=300,
-        metavar="SECONDS",
-        help="Seconds between maintenance cycles (default: 300).",
-    )
-    p_maintain.add_argument(
-        "--once",
-        action="store_true",
-        help="Run exactly one cycle and exit.",
-    )
+    p_maintain.add_argument("--interval", type=float, default=300, metavar="SECONDS", help="Seconds between maintenance cycles (default: 300).")
+    p_maintain.add_argument("--once", action="store_true", help="Run exactly one cycle and exit.")
 
     return parser
 
