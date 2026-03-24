@@ -5,9 +5,7 @@ With session buffering, auto-consolidation, temporal reasoning, embedding interp
 
 from __future__ import annotations
 
-import json
 import re
-import time
 import warnings
 from typing import Generator
 
@@ -25,7 +23,7 @@ __all__ = ["LMStudioClient"]
 
 
 def _strip_think(text: str) -> str:
-    return re.sub(r"((<tool_call>|Thinking Process:).*?)", "", text, flags=re.DOTALL).strip()
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 class LMStudioClient:
@@ -176,7 +174,7 @@ class LMStudioClient:
             meta={"user_id": self.user_id}
         )
 
-                # Numeric pattern detection for arithmetic
+        # Numeric pattern detection for arithmetic
         match = re.match(r'^(\d+)\s*([×*])\s*(\d+)$', user_message.strip())
         if match:
             a, op, b = match.groups()
@@ -185,25 +183,6 @@ class LMStudioClient:
                 f"Pattern: {a} {op} {b} = {val}",
                 meta={"user_id": self.user_id, "type": "pattern"}
             )
-            
-        # Summary (for concise recall)
-        summary_chat = self._build_chat(
-            "Summarise the exchange concisely and factually. "
-            "DO NOT reference other memories or use labels like 'first', 'last'.",
-            f"User asked: “{user_message}”, Assistant replied: “{assistant_response}”."
-        )
-        
-        summary_parts = []
-        for chunk in self._client.llm.model(self.model_id).respond_stream(summary_chat):
-            summary_parts.append(chunk.content)
-        
-        full_summary = "".join(summary_parts)
-        final_summary = (
-            _strip_think(full_summary) 
-            if "asked" in full_summary.lower() and "replied" in full_summary.lower()
-            else f"User asked: “{user_message}”, Assistant replied: “{assistant_response}”."
-        )
-        self._store.store(final_summary, meta={"user_id": self.user_id})
         yield "\n[memory saved]"
 
         self._session_history.append((user_message, assistant_response))
