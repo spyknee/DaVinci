@@ -24,8 +24,10 @@ def _load_zoom_levels(value: str) -> dict:
     if not value:
         return dict(_ZOOM_LEVELS_DEFAULT)
     try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
+        data = json.loads(value)
+        return {int(k): v for k, v in data.items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+
         pass
     try:
         return ast.literal_eval(value)
