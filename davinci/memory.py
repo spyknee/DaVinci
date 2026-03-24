@@ -1,6 +1,7 @@
 """Memory node and database operations for DaVinci v0.5.2."""
 from __future__ import annotations
 
+import ast
 import sqlite3
 import uuid
 import time
@@ -10,6 +11,28 @@ from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any
 
 from davinci.fractals import escape_time, normalize_escape_time
+
+_ZOOM_LEVELS_DEFAULT = {1: "", 2: "", 3: ""}
+
+
+def _load_zoom_levels(value: str) -> dict:
+    """Deserialize zoom_levels from a DB string.
+
+    Tries JSON first (new format), falls back to ast.literal_eval for old
+    Python-dict strings, and returns the default dict if both fail.
+    """
+    if not value:
+        return dict(_ZOOM_LEVELS_DEFAULT)
+    try:
+        data = json.loads(value)
+        return {int(k): v for k, v in data.items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+
+        pass
+    try:
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return dict(_ZOOM_LEVELS_DEFAULT)
 
 
 @dataclass
@@ -46,7 +69,7 @@ class MemoryNode:
         return cls(
             id=row["id"],
             content=row["content"],
-            zoom_levels=eval(row["zoom_levels"]),
+            zoom_levels=_load_zoom_levels(row["zoom_levels"]),
             classification=row["classification"],
             frequency=float(row["frequency"]),
             created_at=float(row["created_at"]),
@@ -142,7 +165,7 @@ class MemoryDB:
                 (
                     node_id,
                     content,
-                    str(zoom_levels),
+                    json.dumps(zoom_levels),
                     now,
                     now,
                     str(c_complex),
@@ -265,7 +288,7 @@ class MemoryDB:
         with self.conn:
             self.conn.execute(
                 "UPDATE memories SET zoom_levels = ? WHERE id = ?",
-                (str(zooms), node_id),
+                (json.dumps(zooms), node_id),
             )
 
     def add_tags(self, node_id: str, tags: List[str]) -> bool:
